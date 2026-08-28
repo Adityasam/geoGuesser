@@ -1,0 +1,405 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GeoGuesser</title>
+<link href="https://unpkg.com/mapillary-js@4.1.2/dist/mapillary.css" rel="stylesheet">
+<link href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" rel="stylesheet">
+<script src="https://unpkg.com/mapillary-js@4.1.2/dist/mapillary.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  :root {
+    --ink: #0f172a;
+    --panel: rgba(255, 255, 255, .92);
+    --accent: #2563eb;
+    --accent-hi: #1d4ed8;
+    --shadow: 0 10px 40px rgba(0, 0, 0, .45);
+    --ease: cubic-bezier(.4, 0, .2, 1);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; color: var(--ink);
+               font: 15px/1.4 ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; }
+
+  /* z-index 0 gives the viewer its own stacking context, keeping it under the UI */
+  #street { position: absolute; inset: 0; z-index: 0; background: #111; }
+
+  #brand { position: absolute; top: 16px; left: 16px; z-index: 600;
+           display: flex; align-items: center; gap: 8px;
+           padding: 8px 14px; border-radius: 999px;
+           background: var(--panel); backdrop-filter: blur(8px);
+           box-shadow: var(--shadow); font-weight: 650; letter-spacing: -.01em; }
+  #brand small { font-weight: 500; opacity: .55; }
+  #brand b { padding-left: 12px; margin-left: 4px; font-variant-numeric: tabular-nums;
+             border-left: 1px solid rgba(15, 23, 42, .15); }
+
+  /* start screen, sits over everything until the first round */
+  #start { position: absolute; inset: 0; z-index: 900; display: flex;
+           flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+           text-align: center; color: #fff; overflow: hidden;
+           background: radial-gradient(ellipse at center, #1e293b, #020617); }
+  #start video { position: absolute; inset: 0; z-index: -2;
+                 width: 100%; height: 100%; object-fit: cover; }
+  /* scrim over the footage so the title stays readable */
+  #start::before { content: ''; position: absolute; inset: 0; z-index: -1;
+                   background: radial-gradient(ellipse at center,
+                               rgba(2, 6, 23, .35), rgba(2, 6, 23, .85)); }
+  #start.gone { display: none; }
+  #start h1 { margin: 0; font-size: clamp(34px, 7vw, 62px); font-weight: 750;
+              letter-spacing: -.03em; }
+  #start p { margin: 10px 0 26px; opacity: .6; line-height: 1.5; }
+  #startBtn { padding: 14px 44px; font-size: 17px; border-radius: 11px; }
+  #final { margin-bottom: 22px; font-size: 15px; opacity: .8; }
+  #final b { font-size: 26px; font-weight: 750; display: block; margin-top: 4px; }
+
+  /* mode picker */
+  #sheet { width: min(440px, 90vw); margin-top: 24px; text-align: left;
+           display: none; flex-direction: column; gap: 10px; }
+  #sheet.show { display: flex; }
+  #sheet h2 { margin: 0 0 4px; font-size: 13px; font-weight: 600; opacity: .5;
+              letter-spacing: .08em; text-transform: uppercase; }
+  .mode { display: block; width: 100%; padding: 14px 18px; text-align: left;
+          border-radius: 12px; background: rgba(255, 255, 255, .1);
+          border: 1px solid rgba(255, 255, 255, .16); color: #fff; }
+  .mode:hover:not(:disabled) { background: rgba(255, 255, 255, .18); }
+  .mode small { display: block; margin-top: 3px; font-weight: 400; opacity: .6; }
+  #opts { display: flex; flex-wrap: wrap; gap: 8px; }
+  #opts[hidden] { display: none; }   /* [hidden] loses to display:flex otherwise */
+  #opts button { flex: 1; min-width: 84px; padding: 13px 6px; }
+  #back { align-self: flex-start; margin-top: 2px; padding: 6px 0;
+          background: none; color: #fff; opacity: .5; font-weight: 500; }
+  #back:hover { opacity: .9; background: none; }
+
+  #panel { position: absolute; right: 16px; bottom: 16px; width: 380px; height: 300px;
+           z-index: 500; display: flex; flex-direction: column; overflow: hidden;
+           border-radius: 14px; background: var(--panel); backdrop-filter: blur(8px);
+           box-shadow: var(--shadow);
+           transition: width .35s var(--ease), height .35s var(--ease),
+                       inset .35s var(--ease), border-radius .35s var(--ease); }
+  /* peek larger on hover, the way you'd expect while aiming a guess */
+  #panel:not(.expanded):hover { width: 480px; height: 380px; }
+  #panel.expanded { inset: 0; width: auto; height: auto; border-radius: 0; }
+
+  #map { flex: 1; min-height: 0; cursor: crosshair; background: #dfe3e8; }
+  #panel.expanded #map { cursor: grab; }
+
+  #bar { display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+         border-top: 1px solid rgba(15, 23, 42, .08); }
+  #panel.expanded #bar { display: none; }
+  #status { flex: 1; font-size: 13px; opacity: .7; }
+
+  button { font: inherit; font-weight: 600; padding: 9px 18px; cursor: pointer;
+           border: 0; border-radius: 9px; color: #fff; background: var(--accent);
+           transition: background .15s, transform .15s, opacity .15s; }
+  button:hover:not(:disabled) { background: var(--accent-hi); }
+  button:active:not(:disabled) { transform: translateY(1px); }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+
+  /* result card, only while the map is expanded */
+  #result { position: absolute; left: 50%; bottom: 32px; transform: translate(-50%, 20px);
+            z-index: 700; display: none; gap: 18px; align-items: center;
+            padding: 16px 18px 16px 24px; border-radius: 16px;
+            background: var(--panel); backdrop-filter: blur(8px); box-shadow: var(--shadow);
+            opacity: 0; transition: opacity .3s var(--ease) .15s, transform .3s var(--ease) .15s; }
+  #result.show { display: flex; opacity: 1; transform: translate(-50%, 0); }
+  #dist { font-size: 30px; font-weight: 700; letter-spacing: -.02em; line-height: 1;
+          white-space: nowrap; }
+  #dist small { display: block; margin-top: 5px; font-size: 12px; font-weight: 500;
+                letter-spacing: .06em; text-transform: uppercase; opacity: .5; }
+  #places { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px;
+            padding-left: 18px; border-left: 1px solid rgba(15, 23, 42, .12);
+            font-size: 13px; max-width: 340px; }
+  #places b { font-weight: 600; opacity: .45; }
+  #places span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .spin { width: 13px; height: 13px; margin-right: 7px; vertical-align: -2px;
+          display: inline-block; border: 2px solid rgba(15, 23, 42, .2);
+          border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  @media (max-width: 560px) {
+    #panel:not(.expanded), #panel:not(.expanded):hover { left: 16px; width: auto; height: 240px; }
+  }
+</style>
+
+<div id="street"></div>
+<div id="brand">GeoGuesser <small>360&deg;</small>
+  <b id="score">0</b><b id="progress"></b></div>
+
+<div id="start">
+  <!-- muted + playsinline are what let browsers autoplay it at all -->
+  <video src="/static/earth.mp4" autoplay muted loop playsinline></video>
+  <h1>GeoGuesser <span style="opacity:.5">360&deg;</span></h1>
+  <p>One street. One guess. Anywhere on Earth.</p>
+  <div id="final" hidden></div>
+  <button id="startBtn">Start game</button>
+
+  <div id="sheet">
+    <h2>Choose a mode</h2>
+    <button class="mode" data-mode="time">Time Attack
+      <small>Score as much as you can before the clock runs out</small></button>
+    <button class="mode" data-mode="rounds">Fixed Rounds
+      <small>A set number of guesses, then a final score</small></button>
+    <div id="opts" hidden></div>
+    <button id="back" hidden>&larr; Back</button>
+  </div>
+</div>
+
+<div id="panel">
+  <div id="map"></div>
+  <div id="bar">
+    <span id="status"></span>
+    <button id="guess" disabled>Guess</button>
+  </div>
+</div>
+
+<div id="result">
+  <div id="dist">&mdash;<small>points this round</small></div>
+  <div id="places">
+    <b>You</b><span id="guessName"></span>
+    <b>Actual</b><span id="actualName"></span>
+  </div>
+  <button id="next">Next round</button>
+</div>
+
+<script>
+const token = {{ token|tojson }};
+const panel = document.getElementById('panel');
+const result = document.getElementById('result');
+const distEl = document.getElementById('dist');
+const statusEl = document.getElementById('status');
+const guessBtn = document.getElementById('guess');
+
+const map = L.map('map', { zoomControl: false, worldCopyJump: true }).setView([25, 0], 2);
+L.control.zoom({ position: 'topright' }).addTo(map);
+// Esri World Street Map: Latin/English labels worldwide, no API key.
+// ponytail: OSM's standard tiles label in the local script (Arabic in Egypt, etc).
+L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
+  { attribution: 'Tiles &copy; Esri', maxZoom: 19 }).addTo(map);
+
+function pin(color) {
+  return L.divIcon({
+    className: '',
+    html: '<div style="width:16px;height:16px;border-radius:50%;background:' + color +
+          ';border:3px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.5)"></div>',
+    iconSize: [16, 16], iconAnchor: [8, 8]
+  });
+}
+
+const scoreEl = document.getElementById('score');
+
+// built once, up front: a viewer constructed with an imageId doesn't paint its
+// first frame until some input event wakes the render loop. moveTo() always does.
+const viewer = new mapillary.Viewer({
+  accessToken: token,
+  container: 'street',
+  component: { sequence: false }   // drops the play/pause sequence bar
+});
+window.addEventListener('resize', function () { viewer.resize(); });
+
+let layers = [], picked = null, over = false;
+
+// the panel animates for 350ms; Leaflet has to be told its box changed
+function resize(then) {
+  setTimeout(function () { map.invalidateSize(); if (then) then(); }, 380);
+}
+
+function setStatus(text, busy) {
+  statusEl.innerHTML = (busy ? '<span class="spin"></span>' : '') + text;
+}
+
+map.on('click', function (e) {
+  if (over) return;                       // already guessed, waiting for Next
+  picked = e.latlng.wrap();               // the map repeats; keep lng in +/-180
+  if (layers[0]) layers[0].setLatLng(picked);
+  else layers[0] = L.marker(picked, { icon: pin('#2563eb') }).addTo(map);
+  guessBtn.disabled = false;
+  setStatus('Locked in? Hit Guess.');
+});
+
+async function newRound(tries) {
+  tries = tries || 0;
+  layers.forEach(function (l) { map.removeLayer(l); });
+  layers = [];
+  picked = null;
+  over = false;
+  guessBtn.disabled = true;
+  stopClock();                 // loading a street is on the house
+  result.classList.remove('show');
+  panel.classList.remove('expanded');
+  map.setView([25, 0], 2);
+  resize();
+  setStatus('Finding a street&hellip;', true);
+
+  let d;
+  try {
+    d = await (await fetch('/api/round')).json();
+  } catch (err) {
+    d = { error: 'network error' };
+  }
+  if (d.error) { setStatus(d.error); return; }
+
+  try {
+    await viewer.moveTo(d.image_id);
+    viewer.resize();
+    setStatus('Look around, then click the map.');
+    const t = await (await fetch('/api/resume', { method: 'POST' })).json();
+    if (t.over) return endGame();
+    startClock(t.seconds_left);
+  } catch (err) {
+    // a dud image would otherwise strand the player: Next only exists post-guess
+    if (tries < 2) return newRound(tries + 1);
+    setStatus('could not load a street, please reload');
+  }
+}
+
+guessBtn.onclick = async function () {
+  guessBtn.disabled = true;
+  stopClock();                 // result screen is free time too
+  setStatus('Checking&hellip;', true);
+  const r = await fetch('/api/guess', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ lat: picked.lat, lng: picked.lng })
+  });
+  const d = await r.json();
+  if (d.error) { setStatus(d.error); return; }
+
+  over = true;
+  // draw the actual point on whichever world copy is nearer, so the line takes
+  // the short way across the antimeridian instead of wrapping right around
+  let lng = d.actual.lng;
+  if (Math.abs(lng - picked.lng) > 180) lng += picked.lng > lng ? 360 : -360;
+  const actual = L.latLng(d.actual.lat, lng);
+
+  layers.push(
+    L.marker(actual, { icon: pin('#dc2626') }).addTo(map).bindTooltip(d.actual_name),
+    L.polyline([picked, actual], { color: '#dc2626', weight: 2, dashArray: '6,7' }).addTo(map)
+  );
+  layers[0].bindTooltip(d.guess_name);
+  distEl.innerHTML = '+' + d.points.toLocaleString() + '<small>points this round</small>';
+  scoreEl.textContent = d.score.toLocaleString();
+  if (mode === 'rounds') progressEl.textContent = d.played + ' / ' + d.limit;
+  else stopClock(d.seconds_left);
+  nextBtn.dataset.last = d.over ? '1' : '0';
+  nextBtn.textContent = d.over ? 'See final score' : 'Next round';
+  document.getElementById('guessName').textContent = d.guess_name;
+  document.getElementById('actualName').textContent = d.actual_name;
+
+  panel.classList.add('expanded');
+  resize(function () {
+    map.fitBounds(L.latLngBounds([picked, actual]), { padding: [90, 90], maxZoom: 12 });
+    result.classList.add('show');
+  });
+};
+
+// ------------------------------------------------------------- game modes
+
+const LENGTHS = { time: [5, 10, 15], rounds: [5, 10, 15, 30] };
+const startEl = document.getElementById('start');
+const sheet = document.getElementById('sheet');
+const opts = document.getElementById('opts');
+const backBtn = document.getElementById('back');
+const finalEl = document.getElementById('final');
+const nextBtn = document.getElementById('next');
+const progressEl = document.getElementById('progress');
+
+let mode = null, deadline = 0, ticker = null, finished = false;
+
+function showModes(show) {
+  sheet.classList.toggle('show', show);
+  document.getElementById('startBtn').hidden = show;
+  document.querySelectorAll('.mode').forEach(function (b) { b.hidden = false; });
+  backBtn.before(opts);          // park it back at the end of the sheet
+  opts.innerHTML = '';
+  opts.hidden = true;
+  backBtn.hidden = true;
+}
+
+document.querySelectorAll('.mode').forEach(function (btn) {
+  btn.onclick = function () {
+    const m = btn.dataset.mode;
+    // keep the chosen card, drop the other, and slot the lengths right under it
+    document.querySelectorAll('.mode').forEach(function (b) { b.hidden = b !== btn; });
+    btn.after(opts);
+    opts.innerHTML = '';
+    opts.hidden = false;
+    LENGTHS[m].forEach(function (n) {
+      const b = document.createElement('button');
+      b.textContent = m === 'time' ? n + ' min' : n + ' rounds';
+      b.onclick = function () { beginGame(m, n); };
+      opts.appendChild(b);
+    });
+    backBtn.hidden = false;
+  };
+});
+
+backBtn.onclick = function () { showModes(true); };
+document.getElementById('startBtn').onclick = function () { showModes(true); };
+
+async function beginGame(m, limit) {
+  const d = await (await fetch('/api/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode: m, limit: limit })
+  })).json();
+  if (d.error) { alert(d.error); return; }
+
+  mode = m;
+  finished = false;
+  scoreEl.textContent = '0';
+  finalEl.hidden = true;
+  showModes(false);
+  startEl.classList.add('gone');
+  document.querySelector('#start video').pause();   // display:none still decodes
+  viewer.resize();          // the viewer was hidden behind the start screen
+
+  if (mode === 'time') showTime(d.seconds_left);
+  else progressEl.textContent = '0 / ' + limit;
+  newRound();
+}
+
+function showTime(secs) {
+  progressEl.textContent =
+    Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0');
+}
+
+function tick() {
+  const left = Math.max(0, Math.round((deadline - Date.now()) / 1000));
+  showTime(left);
+  if (left === 0) endGame();
+}
+
+// the server is the authority on the clock; these just mirror it on screen
+function startClock(secs) {
+  if (mode !== 'time') return;
+  clearInterval(ticker);
+  deadline = Date.now() + secs * 1000;
+  showTime(secs);
+  ticker = setInterval(tick, 1000);
+}
+
+function stopClock(secs) {
+  clearInterval(ticker);
+  ticker = null;
+  if (mode === 'time' && secs !== undefined) showTime(secs);
+}
+
+function endGame() {
+  if (finished) return;              // the clock and the last guess can both fire
+  finished = true;
+  clearInterval(ticker);
+  over = true;                       // freeze the map
+  finalEl.innerHTML = 'Final score<b>' + scoreEl.textContent + '</b>';
+  finalEl.hidden = false;
+  result.classList.remove('show');
+  panel.classList.remove('expanded');
+  progressEl.textContent = '';
+  startEl.classList.remove('gone');
+  document.querySelector('#start video').play();
+  showModes(false);
+  resize();
+}
+
+nextBtn.onclick = function () {
+  if (nextBtn.dataset.last === '1') endGame(); else newRound();
+};
+</script>
