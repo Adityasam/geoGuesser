@@ -2,6 +2,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>GeoGuesser</title>
+<link rel="icon" type="image/png" sizes="64x64" href="/static/icons/geoguesser-pin-white-64.png">
+<link rel="icon" type="image/png" sizes="128x128" href="/static/icons/geoguesser-pin-white-128.png">
+<link rel="icon" type="image/png" sizes="256x256" href="/static/icons/geoguesser-pin-white-256.png">
+<link rel="apple-touch-icon" href="/static/icons/geoguesser-pin-white-180.png">
 <link href="https://unpkg.com/mapillary-js@4.1.2/dist/mapillary.css" rel="stylesheet">
 <link href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" rel="stylesheet">
 <script src="https://unpkg.com/mapillary-js@4.1.2/dist/mapillary.js"></script>
@@ -43,6 +47,8 @@
                    background: radial-gradient(ellipse at center,
                                rgba(2, 6, 23, .35), rgba(2, 6, 23, .85)); }
   #start.gone { display: none; }
+  #logo { width: clamp(64px, 11vw, 92px); margin-bottom: 6px;
+          filter: drop-shadow(0 6px 18px rgba(0, 0, 0, .5)); }
   #start h1 { margin: 0; font-size: clamp(34px, 7vw, 62px); font-weight: 750;
               letter-spacing: -.03em; }
   #start p { margin: 10px 0 26px; opacity: .6; line-height: 1.5; }
@@ -127,6 +133,7 @@
 <div id="start">
   <!-- muted + playsinline are what let browsers autoplay it at all -->
   <video src="/static/earth.mp4" autoplay muted loop playsinline></video>
+  <img id="logo" src="/static/icons/geoguesser-pin-white-256.png" alt="">
   <h1>GeoGuesser <span style="opacity:.5">360&deg;</span></h1>
   <p>One street. One guess. Anywhere on Earth.</p>
   <div id="final" hidden></div>
