@@ -506,6 +506,10 @@ def new_round():
     if game_over():
         return jsonify(error="game over"), 400
     pause_clock()  # loading a street is on the house
+
+    # a round is fixed until it is answered: asking again must not reroll it
+    if session.get("answer") and session.get("image"):
+        return jsonify(image_id=session["image"])
     try:
         mp = get_game(session.get("game"))
         if mp:
@@ -516,7 +520,8 @@ def new_round():
         return jsonify(error=str(e)), 502
     warm_one()
     session["answer"] = (lat, lon)  # answer stays server-side, no devtools peeking
-    return jsonify(image_id=str(image_id))
+    session["image"] = str(image_id)
+    return jsonify(image_id=session["image"])
 
 
 @app.route("/api/guess", methods=["POST"])
@@ -540,6 +545,7 @@ def guess():
     session["score"] = total
     session["played"] = session.get("played", 0) + 1
     session.pop("answer", None)  # one guess per round
+    session.pop("image", None)
 
     game = get_game(session.get("game"))
     if game and session["pid"] in game["players"]:

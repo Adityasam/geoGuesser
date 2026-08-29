@@ -327,42 +327,65 @@ map.on('click', function (e) {
   setStatus('Locked in? Hit Guess.');
 });
 
+let loading = false;   // guards against two rounds loading over each other
+
+// MapillaryJS rejects moveTo with a Cancel/Abort error when the player walks or
+// drags before it settles. The viewer is then already on a valid image, so that
+// is not a failure -- retrying it used to pull a whole new location mid-round.
+function navAborted(err) {
+  const name = (err && (err.name || (err.constructor || {}).name)) || '';
+  return /cancel|abort/i.test(name);
+}
+
 async function newRound(tries) {
   tries = tries || 0;
-  layers.forEach(function (l) { map.removeLayer(l); });
-  layers = [];
-  actualPoint = null;
-  actualTrue = null;
-  drawnGuesses = {};
-  picked = null;
-  over = false;
-  guessBtn.disabled = true;
-  stopClock();                 // loading a street is on the house
-  result.classList.remove('show');
-  panel.classList.remove('expanded');
-  map.setView([25, 0], 2);
-  resize();
-  setStatus('Finding a street&hellip;', true);
-
-  let d;
+  if (loading && !tries) return;
+  loading = true;
   try {
-    d = await (await fetch('/api/round')).json();
-  } catch (err) {
-    d = { error: 'network error' };
-  }
-  if (d.error) { setStatus(d.error); return; }
+    layers.forEach(function (l) { map.removeLayer(l); });
+    layers = [];
+    actualPoint = null;
+    actualTrue = null;
+    drawnGuesses = {};
+    picked = null;
+    over = false;
+    guessBtn.disabled = true;
+    stopClock();                 // loading a street is on the house
+    result.classList.remove('show');
+    panel.classList.remove('expanded');
+    map.setView([25, 0], 2);
+    resize();
+    setStatus('Finding a street&hellip;', true);
 
-  try {
-    await viewer.moveTo(d.image_id);
+    let d;
+    try {
+      d = await (await fetch('/api/round')).json();
+    } catch (err) {
+      d = { error: 'network error' };
+    }
+    if (d.error) { setStatus(d.error); return; }
+
+    try {
+      await viewer.moveTo(d.image_id);
+    } catch (err) {
+      if (!navAborted(err)) {
+        // a dud image would strand the player: Next only exists post-guess
+        if (tries < 2) { loading = false; return newRound(tries + 1); }
+        setStatus('could not load a street, please reload');
+        return;
+      }
+    }
     viewer.resize();
     setStatus('Look around, then click the map.');
-    const t = await (await fetch('/api/resume', { method: 'POST' })).json();
-    if (t.over) return endGame();
-    startClock(t.seconds_left);
-  } catch (err) {
-    // a dud image would otherwise strand the player: Next only exists post-guess
-    if (tries < 2) return newRound(tries + 1);
-    setStatus('could not load a street, please reload');
+
+    // a hiccup here costs the clock, never the location
+    try {
+      const t = await (await fetch('/api/resume', { method: 'POST' })).json();
+      if (t.over) return endGame();
+      startClock(t.seconds_left);
+    } catch (err) { /* clock simply stays paused */ }
+  } finally {
+    loading = false;
   }
 }
 
