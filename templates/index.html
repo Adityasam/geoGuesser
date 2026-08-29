@@ -20,6 +20,8 @@
     --ease: cubic-bezier(.4, 0, .2, 1);
   }
   * { box-sizing: border-box; }
+  /* any rule that sets `display` beats the UA's [hidden] rule -- force it */
+  [hidden] { display: none !important; }
   html, body { margin: 0; height: 100%; overflow: hidden; color: var(--ink);
                font: 15px/1.4 ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; }
 
@@ -34,6 +36,9 @@
   #brand small { font-weight: 500; opacity: .55; }
   #brand b { padding-left: 12px; margin-left: 4px; font-variant-numeric: tabular-nums;
              border-left: 1px solid rgba(15, 23, 42, .15); }
+  #quitBtn { margin-left: 10px; padding: 5px 12px; font-size: 13px; border-radius: 8px;
+             background: rgba(15, 23, 42, .07); color: var(--ink); opacity: .65; }
+  #quitBtn:hover { background: #fee2e2; color: #b91c1c; opacity: 1; }
 
   /* start screen, sits over everything until the first round */
   #start { position: absolute; inset: 0; z-index: 900; display: flex;
@@ -55,24 +60,75 @@
   #startBtn { padding: 14px 44px; font-size: 17px; border-radius: 11px; }
   #final { margin-bottom: 22px; font-size: 15px; opacity: .8; }
   #final b { font-size: 26px; font-weight: 750; display: block; margin-top: 4px; }
+  #standings { margin-top: 12px; padding-top: 12px; text-align: left;
+               border-top: 1px solid rgba(255, 255, 255, .15);
+               display: grid; gap: 6px; min-width: 240px; }
+  #standings li { display: flex; justify-content: space-between; gap: 20px;
+                  list-style: none; font-variant-numeric: tabular-nums; }
+  #standings li.you { font-weight: 700; }
+  #standings .rounds { opacity: .45; font-size: 12px; }
 
-  /* mode picker */
-  #sheet { width: min(440px, 90vw); margin-top: 24px; text-align: left;
-           display: none; flex-direction: column; gap: 10px; }
-  #sheet.show { display: flex; }
-  #sheet h2 { margin: 0 0 4px; font-size: 13px; font-weight: 600; opacity: .5;
-              letter-spacing: .08em; text-transform: uppercase; }
+  /* mode picker: single player on the left, multiplayer on the right */
+  #sheet { width: min(880px, 92vw); margin-top: 24px; text-align: left;
+           display: none; gap: 16px;
+           grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+  #sheet.show { display: grid; }
+  #sheet section { display: flex; flex-direction: column; gap: 10px;
+                   padding: 16px; border-radius: 14px;
+                   background: rgba(2, 6, 23, .35);
+                   border: 1px solid rgba(255, 255, 255, .1); }
+  h2 { margin: 0 0 4px; font-size: 13px; font-weight: 600; opacity: .5;
+       letter-spacing: .08em; text-transform: uppercase; }
+
+  /* join by code */
+  #joinForm { display: flex; flex-wrap: wrap; gap: 8px; }
+  #codeInput { flex: 1; min-width: 140px; padding: 13px 14px; border-radius: 10px;
+               font: 600 17px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+               letter-spacing: .12em; text-transform: uppercase; color: #fff;
+               background: rgba(255, 255, 255, .08);
+               border: 1px solid rgba(255, 255, 255, .2); }
+  #codeInput::placeholder { color: rgba(255, 255, 255, .3); letter-spacing: .12em; }
+  #codeInput:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  #joinErr { flex-basis: 100%; min-height: 16px; font-size: 12px; color: #fca5a5; }
+
+  /* code hand-off screen */
+  #share { width: min(460px, 92vw); margin-top: 24px; padding: 22px;
+           border-radius: 16px; background: rgba(2, 6, 23, .5);
+           border: 1px solid rgba(255, 255, 255, .12); }
+  #codeBox { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+  #codeText { flex: 1; padding: 14px 16px; border-radius: 11px;
+              font: 700 clamp(20px, 4vw, 28px)/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+              letter-spacing: .16em; text-align: center;
+              background: rgba(255, 255, 255, .1);
+              border: 1px dashed rgba(255, 255, 255, .3); }
+  #shareNote { margin: 0 0 18px; font-size: 13px; opacity: .55; }
+  #playBtn { width: 100%; padding: 13px; }
   .mode { display: block; width: 100%; padding: 14px 18px; text-align: left;
           border-radius: 12px; background: rgba(255, 255, 255, .1);
           border: 1px solid rgba(255, 255, 255, .16); color: #fff; }
   .mode:hover:not(:disabled) { background: rgba(255, 255, 255, .18); }
   .mode small { display: block; margin-top: 3px; font-weight: 400; opacity: .6; }
   #opts { display: flex; flex-wrap: wrap; gap: 8px; }
-  #opts[hidden] { display: none; }   /* [hidden] loses to display:flex otherwise */
   #opts button { flex: 1; min-width: 84px; padding: 13px 6px; }
   #back { align-self: flex-start; margin-top: 2px; padding: 6px 0;
           background: none; color: #fff; opacity: .5; font-weight: 500; }
   #back:hover { opacity: .9; background: none; }
+
+  /* live scoreboard, multiplayer only */
+  #board { position: absolute; top: 16px; right: 16px; z-index: 600;
+           min-width: 200px; padding: 12px 14px; border-radius: 14px;
+           background: var(--panel); backdrop-filter: blur(8px);
+           box-shadow: var(--shadow); font-size: 14px; }
+  #board h3 { margin: 0 0 8px; font-size: 11px; font-weight: 600; opacity: .45;
+              letter-spacing: .08em; text-transform: uppercase; }
+  #board h3 span { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                   letter-spacing: .1em; }
+  #boardList { margin: 0; padding: 0; list-style: none;
+               display: grid; gap: 5px; }
+  #boardList li { display: flex; justify-content: space-between; gap: 18px;
+                  font-variant-numeric: tabular-nums; }
+  #boardList li.you { font-weight: 700; color: var(--accent); }
+  #boardList .rounds { opacity: .4; font-size: 12px; font-weight: 400; }
 
   #panel { position: absolute; right: 16px; bottom: 16px; width: 380px; height: 300px;
            z-index: 500; display: flex; flex-direction: column; overflow: hidden;
@@ -110,11 +166,11 @@
           white-space: nowrap; }
   #dist small { display: block; margin-top: 5px; font-size: 12px; font-weight: 500;
                 letter-spacing: .06em; text-transform: uppercase; opacity: .5; }
-  #places { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px;
-            padding-left: 18px; border-left: 1px solid rgba(15, 23, 42, .12);
-            font-size: 13px; max-width: 340px; }
-  #places b { font-weight: 600; opacity: .45; }
-  #places span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #km { padding-left: 18px; border-left: 1px solid rgba(15, 23, 42, .12);
+        font-size: 22px; font-weight: 650; letter-spacing: -.01em; line-height: 1;
+        white-space: nowrap; opacity: .75; }
+  #km small { display: block; margin-top: 5px; font-size: 12px; font-weight: 500;
+              letter-spacing: .06em; text-transform: uppercase; opacity: .6; }
 
   .spin { width: 13px; height: 13px; margin-right: 7px; vertical-align: -2px;
           display: inline-block; border: 2px solid rgba(15, 23, 42, .2);
@@ -128,7 +184,8 @@
 
 <div id="street"></div>
 <div id="brand">GeoGuesser <small>360&deg;</small>
-  <b id="score">0</b><b id="progress"></b></div>
+  <b id="score">0</b><b id="progress"></b>
+  <button id="quitBtn" hidden>Quit</button></div>
 
 <div id="start">
   <!-- muted + playsinline are what let browsers autoplay it at all -->
@@ -140,14 +197,43 @@
   <button id="startBtn">Start game</button>
 
   <div id="sheet">
-    <h2>Choose a mode</h2>
-    <button class="mode" data-mode="time">Time Attack
-      <small>Score as much as you can before the clock runs out</small></button>
-    <button class="mode" data-mode="rounds">Fixed Rounds
-      <small>A set number of guesses, then a final score</small></button>
-    <div id="opts" hidden></div>
-    <button id="back" hidden>&larr; Back</button>
+    <section id="solo">
+      <h2 id="soloTitle">Single player</h2>
+      <button class="mode" data-mode="time">Time Attack
+        <small>Score as much as you can before the clock runs out</small></button>
+      <button class="mode" data-mode="rounds">Fixed Rounds
+        <small>A set number of guesses, then a final score</small></button>
+      <div id="opts" hidden></div>
+      <button id="back" hidden>&larr; Back</button>
+    </section>
+
+    <section id="multi">
+      <h2>Multiplayer</h2>
+      <button class="mode" id="createBtn">Create game
+        <small>10 rounds &mdash; share the code with your friends</small></button>
+      <button class="mode" id="joinBtn">Join game
+        <small>Enter a code you were given</small></button>
+      <form id="joinForm" hidden>
+        <input id="codeInput" maxlength="10" autocomplete="off" spellcheck="false"
+               placeholder="ABCD123XYZ" aria-label="Game code">
+        <button type="submit">Join</button>
+        <div id="joinErr"></div>
+      </form>
+    </section>
   </div>
+
+  <div id="share" hidden>
+    <h2>Share this code</h2>
+    <div id="codeBox"><span id="codeText"></span><button id="copyBtn">Copy</button></div>
+    <p id="shareNote">A 10-round match. Everyone gets the same locations, and
+       the next street only loads once everyone has guessed.</p>
+    <button id="playBtn">Start playing</button>
+  </div>
+</div>
+
+<div id="board" hidden>
+  <h3>Game <span id="boardCode"></span></h3>
+  <ol id="boardList"></ol>
 </div>
 
 <div id="panel">
@@ -159,11 +245,8 @@
 </div>
 
 <div id="result">
-  <div id="dist">&mdash;<small>points this round</small></div>
-  <div id="places">
-    <b>You</b><span id="guessName"></span>
-    <b>Actual</b><span id="actualName"></span>
-  </div>
+  <div id="dist">&mdash;<small>points</small></div>
+  <div id="km">&mdash;<small>off target</small></div>
   <button id="next">Next round</button>
 </div>
 
@@ -172,6 +255,12 @@ const token = {{ token|tojson }};
 const panel = document.getElementById('panel');
 const result = document.getElementById('result');
 const distEl = document.getElementById('dist');
+const kmEl = document.getElementById('km');
+
+// metres read better than "0.4 km" for a near miss
+function fmt(km) {
+  return km < 1 ? Math.round(km * 1000) + ' m' : Math.round(km).toLocaleString() + ' km';
+}
 const statusEl = document.getElementById('status');
 const guessBtn = document.getElementById('guess');
 
@@ -192,6 +281,7 @@ function pin(color) {
 }
 
 const scoreEl = document.getElementById('score');
+const quitBtn = document.getElementById('quitBtn');
 
 // built once, up front: a viewer constructed with an imageId doesn't paint its
 // first frame until some input event wakes the render loop. moveTo() always does.
@@ -278,18 +368,22 @@ guessBtn.onclick = async function () {
   const actual = L.latLng(d.actual.lat, lng);
 
   layers.push(
-    L.marker(actual, { icon: pin('#dc2626') }).addTo(map).bindTooltip(d.actual_name),
+    L.marker(actual, { icon: pin('#dc2626') }).addTo(map),
     L.polyline([picked, actual], { color: '#dc2626', weight: 2, dashArray: '6,7' }).addTo(map)
   );
-  layers[0].bindTooltip(d.guess_name);
-  distEl.innerHTML = '+' + d.points.toLocaleString() + '<small>points this round</small>';
+  distEl.innerHTML = '+' + d.points.toLocaleString() + '<small>points</small>';
+  kmEl.innerHTML = fmt(d.distance_km) + '<small>off target</small>';
   scoreEl.textContent = d.score.toLocaleString();
   if (mode === 'rounds') progressEl.textContent = d.played + ' / ' + d.limit;
   else stopClock(d.seconds_left);
   nextBtn.dataset.last = d.over ? '1' : '0';
   nextBtn.textContent = d.over ? 'See final score' : 'Next round';
-  document.getElementById('guessName').textContent = d.guess_name;
-  document.getElementById('actualName').textContent = d.actual_name;
+  if (code && d.sync) {
+    const me = d.sync.players.find(function (p) { return p.id === d.sync.you; });
+    myName = me ? me.name : '';
+    renderBoard(d.sync);
+    showWait(d.sync);
+  }
 
   panel.classList.add('expanded');
   resize(function () {
@@ -309,7 +403,53 @@ const finalEl = document.getElementById('final');
 const nextBtn = document.getElementById('next');
 const progressEl = document.getElementById('progress');
 
+const soloSection = document.getElementById('solo');
+const soloTitle = document.getElementById('soloTitle');
+const multiSection = document.getElementById('multi');
+const joinForm = document.getElementById('joinForm');
+const joinErr = document.getElementById('joinErr');
+const codeInput = document.getElementById('codeInput');
+const shareEl = document.getElementById('share');
+
+const board = document.getElementById('board');
+const boardList = document.getElementById('boardList');
+
 let mode = null, deadline = 0, ticker = null, finished = false;
+let code = null, poller = null, pendingGame = null, curRound = 0, myName = '';
+
+function renderBoard(d) {
+  boardList.innerHTML = '';
+  d.players.forEach(function (p) {
+    const li = document.createElement('li');
+    if (p.id === d.you) li.className = 'you';
+    li.innerHTML = '<span>' + p.name + (p.id === d.you ? ' (you)' : '') +
+                   (p.guessed ? '' : ' <span class="rounds">guessing\u2026</span>') +
+                   '</span><span>' + p.score.toLocaleString() + '</span>';
+    boardList.appendChild(li);
+  });
+}
+
+// the whole match moves in lockstep: nobody sees the next street until
+// everyone has guessed this one and clicked through the result
+async function pollSync() {
+  if (!code) return null;
+  const d = await fetch('/api/sync').then(function (r) { return r.json(); });
+  if (d.error) return null;
+  renderBoard(d);
+  if (d.round !== curRound) { curRound = d.round; newRound(); return d; }
+  if (over && !finished) showWait(d);
+  return d;
+}
+
+function showWait(d) {
+  if (nextBtn.dataset.last === '1') return;      // last round, offer the results
+  const others = d.waiting_on.filter(function (n) { return n !== myName; });
+  const blocked = !d.all_guessed || d.you_ready;
+  nextBtn.disabled = blocked;
+  nextBtn.textContent = blocked
+    ? (others.length ? 'Waiting for ' + others.join(', ') : 'Waiting\u2026')
+    : 'Next round';
+}
 
 function showModes(show) {
   sheet.classList.toggle('show', show);
@@ -319,13 +459,19 @@ function showModes(show) {
   opts.innerHTML = '';
   opts.hidden = true;
   backBtn.hidden = true;
+  joinForm.hidden = true;
+  joinErr.textContent = '';
+  shareEl.hidden = true;
+  multiSection.hidden = false;
 }
 
-document.querySelectorAll('.mode').forEach(function (btn) {
+// the two mode cards do double duty: they pick the settings for a solo game,
+// or for a multiplayer one when Create was clicked first
+document.querySelectorAll('#solo .mode').forEach(function (btn) {
   btn.onclick = function () {
     const m = btn.dataset.mode;
     // keep the chosen card, drop the other, and slot the lengths right under it
-    document.querySelectorAll('.mode').forEach(function (b) { b.hidden = b !== btn; });
+    document.querySelectorAll('#solo .mode').forEach(function (b) { b.hidden = b !== btn; });
     btn.after(opts);
     opts.innerHTML = '';
     opts.hidden = false;
@@ -339,20 +485,93 @@ document.querySelectorAll('.mode').forEach(function (btn) {
   };
 });
 
+document.getElementById('createBtn').onclick = createGame;
+
+document.getElementById('joinBtn').onclick = function () {
+  joinForm.hidden = false;
+  codeInput.focus();
+};
+
+joinForm.onsubmit = async function (e) {
+  e.preventDefault();
+  joinErr.textContent = '';
+  const d = await post('/api/join', { code: codeInput.value.trim().toUpperCase() });
+  if (d.error) { joinErr.textContent = d.error; return; }
+  enterGame(d);
+};
+
+async function createGame() {
+  const d = await post('/api/create');
+  if (d.error) { alert(d.error); return; }
+  pendingGame = d;
+  document.getElementById('codeText').textContent = d.code;
+  sheet.classList.remove('show');
+  shareEl.hidden = false;
+}
+
+document.getElementById('copyBtn').onclick = function () {
+  const btn = document.getElementById('copyBtn');
+  navigator.clipboard.writeText(document.getElementById('codeText').textContent)
+    .then(function () {
+      btn.textContent = 'Copied';
+      setTimeout(function () { btn.textContent = 'Copy'; }, 1500);
+    })
+    .catch(function () { btn.textContent = 'Copy failed'; });
+};
+
+document.getElementById('playBtn').onclick = function () {
+  shareEl.hidden = true;
+  enterGame(pendingGame);
+};
+
+quitBtn.onclick = async function () {
+  if (!confirm('Quit this game? Your score for this match is lost.')) return;
+  await post('/api/quit');
+  code = null;                  // session is gone, so stop polling the game
+  clearInterval(poller);
+  endGame();
+};
+
 backBtn.onclick = function () { showModes(true); };
 document.getElementById('startBtn').onclick = function () { showModes(true); };
 
-async function beginGame(m, limit) {
-  const d = await (await fetch('/api/start', {
+function setCodeInUrl(c) {
+  history.replaceState({}, '', c ? '?g=' + c : location.pathname);
+}
+
+// a reload (or someone opening a shared link) lands back in the same game
+async function restoreFromUrl() {
+  const wanted = (new URLSearchParams(location.search).get('g') || '').toUpperCase();
+  if (!wanted) return;
+  const st = await fetch('/api/state').then(function (r) { return r.json(); });
+  if (st.active && st.code === wanted) return enterGame(st);   // same browser, same game
+  const d = await post('/api/join', { code: wanted });         // new player on this link
+  if (d.error) { setCodeInUrl(null); return; }
+  enterGame(d);
+}
+
+restoreFromUrl();
+
+function post(url, body) {
+  return fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ mode: m, limit: limit })
-  })).json();
-  if (d.error) { alert(d.error); return; }
+    body: JSON.stringify(body || {})
+  }).then(function (r) { return r.json(); });
+}
 
-  mode = m;
+async function beginGame(m, limit) {
+  const d = await post('/api/start', { mode: m, limit: limit });
+  if (d.error) { alert(d.error); return; }
+  enterGame(d);
+}
+
+// solo, create and join all land here with the same payload from the server
+function enterGame(d) {
+  mode = d.mode;
+  code = d.code || null;
   finished = false;
-  scoreEl.textContent = '0';
+  scoreEl.textContent = (d.score || 0).toLocaleString();
   finalEl.hidden = true;
   showModes(false);
   startEl.classList.add('gone');
@@ -360,7 +579,17 @@ async function beginGame(m, limit) {
   viewer.resize();          // the viewer was hidden behind the start screen
 
   if (mode === 'time') showTime(d.seconds_left);
-  else progressEl.textContent = '0 / ' + limit;
+  else progressEl.textContent = '0 / ' + d.limit;
+
+  quitBtn.hidden = false;
+  board.hidden = !code;
+  if (code) {
+    document.getElementById('boardCode').textContent = code;
+    curRound = d.round || 0;
+    setCodeInUrl(code);        // so a reload comes back into this game
+    pollSync();
+    poller = setInterval(pollSync, 2000);
+  }
   newRound();
 }
 
@@ -390,12 +619,25 @@ function stopClock(secs) {
   if (mode === 'time' && secs !== undefined) showTime(secs);
 }
 
-function endGame() {
+async function endGame() {
   if (finished) return;              // the clock and the last guess can both fire
   finished = true;
   clearInterval(ticker);
+  clearInterval(poller);
   over = true;                       // freeze the map
-  finalEl.innerHTML = 'Final score<b>' + scoreEl.textContent + '</b>';
+
+  if (code) {
+    await pollSync();                // one last refresh before we stop
+    finalEl.innerHTML = 'Final standings' +
+      '<b>' + scoreEl.textContent + '</b>' +
+      '<div id="standings">' + boardList.innerHTML + '</div>';
+    code = null;
+  } else {
+    finalEl.innerHTML = 'Final score<b>' + scoreEl.textContent + '</b>';
+  }
+  board.hidden = true;
+  quitBtn.hidden = true;
+  setCodeInUrl(null);
   finalEl.hidden = false;
   result.classList.remove('show');
   panel.classList.remove('expanded');
@@ -406,7 +648,13 @@ function endGame() {
   resize();
 }
 
-nextBtn.onclick = function () {
-  if (nextBtn.dataset.last === '1') endGame(); else newRound();
+nextBtn.onclick = async function () {
+  if (nextBtn.dataset.last === '1') return endGame();
+  if (!code) return newRound();
+  nextBtn.disabled = true;
+  const d = await post('/api/ready');
+  if (d.error) return;
+  if (d.round !== curRound) { curRound = d.round; newRound(); }
+  else showWait(d);
 };
 </script>

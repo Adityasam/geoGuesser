@@ -5,7 +5,7 @@ photo somewhere on Earth, you drop a pin on the world map, and you're scored on
 how close you got.
 
 No Google Street View, no paid APIs, no map keys — Mapillary for the imagery,
-GeoNames for the places, Nominatim for the place names, Esri for the map tiles.
+GeoNames for the places, Esri for the map tiles.
 
 ---
 
@@ -86,7 +86,12 @@ rebuild it from scratch.
 
 ## Playing
 
-Pick a mode from the title screen:
+Drag inside the photo to look around and walk the arrows to move down the
+street. Click the map bottom-right (it grows on hover), then **Guess** — the
+map expands to full screen and shows the real location, the distance line, your
+points and how far off you were. **Quit** in the top-left leaves any game.
+
+### Single player
 
 | Mode | Options | Ends when |
 |---|---|---|
@@ -98,10 +103,36 @@ paused while a tile loads and while you're reading a result, so a slow download
 never costs you time. The server is the authority on it; the browser countdown
 is a mirror.
 
-Drag inside the photo to look around and walk the arrows to move down the
-street. Click the map bottom-right (it grows on hover), then **Guess** — the
-map expands to full screen and shows the real location, the distance line, and
-your points.
+### Multiplayer
+
+Always a **10-round match**, no options. **Create game** hands you a 10-character
+code; anyone who enters it under **Join game** plays the same 10 locations in the
+same order. The code also lives in the URL as `?g=CODE`, so that link is an
+invite — open it and you join without typing anything.
+
+The match moves in lockstep:
+
+1. Everyone guesses. Your own points show immediately, but **Next round** stays
+   disabled and reads *"Waiting for Player 2"*.
+2. Once all have guessed, the button enables. Click it and it goes back to
+   waiting until the others click too.
+3. When the last player clicks through, the server advances and everyone's next
+   street loads together.
+
+A live scoreboard sits top-right, marking who is still guessing. Two ways a
+match could otherwise deadlock are handled: a player silent for 90 seconds
+stops counting toward the round, and someone joining mid-match sits out the
+round in progress rather than stalling it. Quitting also releases the round.
+
+Codes use a 31-character alphabet with `0`, `O`, `1` and `I` removed so nobody
+mistypes one.
+
+### Reloading
+
+Refreshing mid-match drops you straight back in with your score and round
+intact — the code in the URL plus the session cookie identify you, so no
+duplicate player is created. The signing key is persisted to `.flask_secret`,
+so sessions also survive a server restart (the in-memory games do not).
 
 ### Scoring
 
@@ -137,6 +168,9 @@ All in [`app.py`](app.py):
 | `MIN_POP` | `50000` | Lower for obscurer cities, at a worse coverage hit rate |
 | `MIN_PANOS` | `10` | Minimum panoramas for a tile to count as covered |
 | `WARM` maxlen | `24` | How many cities stay instantly available |
+| `MP_ROUNDS` | `10` | Rounds in a multiplayer match |
+| `STALE` | `90` | Seconds before a silent player stops holding up a round |
+| `GAME_TTL` | `12 h` | How long an unused game code lives |
 
 ---
 
@@ -146,7 +180,9 @@ All in [`app.py`](app.py):
 app.py              Flask app: city selection, tile probing, scoring, routes
 templates/          index.html — the whole front end, no build step
 static/earth.mp4    title screen background
+static/icons/       pin logo: favicon, touch icon, title mark
 cities.db           generated on first run, not in git
+.flask_secret       generated on first run, not in git
 test_app.py         geo maths + city DB checks
 ```
 
@@ -154,10 +190,16 @@ test_app.py         geo maths + city DB checks
 
 | Route | Purpose |
 |---|---|
-| `POST /api/start` | `{mode, limit}` — begins a game, resets the score |
+| `POST /api/start` | `{mode, limit}` — begins a solo game, resets the score |
 | `GET /api/round` | Returns an `image_id`, stashes the answer in the session |
 | `POST /api/resume` | Client says the street is on screen; starts the clock |
 | `POST /api/guess` | `{lat, lng}` — scores it, returns the real location |
+| `POST /api/quit` | Leaves the game and releases the round for everyone else |
+| `POST /api/create` | Opens a 10-round multiplayer game, returns its code |
+| `POST /api/join` | `{code}` — joins an existing game |
+| `GET /api/state` | Whether this browser is still in a game (reload recovery) |
+| `GET /api/sync` | Scoreboard plus who the round is waiting on |
+| `POST /api/ready` | This player has seen the result; advances when all have |
 
 ## Tests
 
@@ -172,17 +214,17 @@ Covers haversine against known distances, the tile ↔ lat/lon round-trip, and
 
 ## Notes and limits
 
-- **Nominatim** (reverse geocoding) allows 1 request/sec and requires a real
-  `User-Agent`. Two lookups per guess, cached on 2-decimal coordinates. Fine
-  for solo play; swap for a paid geocoder before putting this in front of real
-  traffic.
 - **Coverage** is roughly 70% of eligible cities after neighbour probing.
   Mapillary is crowd-sourced, so it's thin in China, much of India, and rural
   areas generally.
 - **`static/earth.mp4` is 24 MB.** Re-encode before deploying anywhere real:
   `ffmpeg -i static/earth.mp4 -c:v libx264 -crf 30 -an -movflags +faststart out.mp4`
-- **Single player, single session.** Score lives in the Flask session cookie;
-  there's no database of games, no leaderboard, no accounts.
+- **Multiplayer games live in memory** and are pruned after 12 hours, so a
+  server restart drops any match in progress. Moving `GAMES` into the SQLite
+  file already sitting next to it would fix that. Players are auto-named
+  "Player 1/2/3" by join order — no names, no accounts, no leaderboard.
+- **No lobby.** Players start whenever they like, the way a challenge link
+  works; there is no "wait for everyone, host presses Go" step.
 - **Dev server only.** `app.run(debug=True)` — put it behind a real WSGI server
   if it ever leaves localhost, and set `SECRET_KEY` so sessions survive
   restarts.
@@ -190,7 +232,6 @@ Covers haversine against known distances, the tile ↔ lat/lon round-trip, and
 ## Credits
 
 Imagery [Mapillary](https://www.mapillary.com) · Places
-[GeoNames](https://www.geonames.org) (CC BY 4.0) · Geocoding
-[Nominatim](https://nominatim.org)/OpenStreetMap · Map tiles Esri ·
+[GeoNames](https://www.geonames.org) (CC BY 4.0) · Map tiles Esri ·
 Viewer [MapillaryJS](https://mapillary.github.io/mapillary-js/) · Map
 [Leaflet](https://leafletjs.com)

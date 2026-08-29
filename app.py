@@ -2,6 +2,7 @@ import io
 import math
 import os
 import random
+import secrets
 import sqlite3
 import threading
 import time
@@ -22,8 +23,6 @@ GEONAMES = "https://download.geonames.org/export/dump/cities15000.zip"
 
 TOKEN = os.environ.get("MAPILLARY_TOKEN", "")
 TILES = "https://tiles.mapillary.com/maps/vtp/mly1_public/2"
-NOMINATIM = "https://nominatim.openstreetmap.org/reverse"
-UA = "geoguesser-game/0.1"  # Nominatim rejects requests without a real User-Agent
 ZOOM = 14  # the only zoom where Mapillary's public tiles carry the image layer
 
 MIN_POP = 50_000  # below this, Mapillary coverage gets thin enough to waste fetches
@@ -36,7 +35,13 @@ FALLOFF_KM = 1500
 WARM = deque(maxlen=24)  # cities whose tile is cached and known to hold 360s
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", os.urandom(16))
+# a random key per boot would log everyone out on every restart -- and with
+# debug=True that is every file save. Persist one instead.
+KEY_FILE = os.path.join(HERE, ".flask_secret")
+if not os.environ.get("SECRET_KEY") and not os.path.exists(KEY_FILE):
+    with open(KEY_FILE, "w") as fh:
+        fh.write(secrets.token_hex(32))
+app.secret_key = os.environ.get("SECRET_KEY") or open(KEY_FILE).read().strip()
 
 
 # --------------------------------------------------------------------------- db
@@ -118,34 +123,6 @@ def tile2deg(x, y, z, px, py, extent):
     lon = (x + px / extent) / n * 360.0 - 180.0
     lat = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * (y + 1 - py / extent) / n))))
     return lat, lon
-
-
-@lru_cache(maxsize=512)
-def place_name(lat, lon):
-    """Human name for a point, e.g. "Shibuya, Japan".
-
-    ponytail: Nominatim, no key needed. Its policy is 1 req/sec -- fine at the
-    pace of a guessing game, and the cache absorbs repeats. Swap for a paid
-    geocoder only if you put this in front of real traffic.
-    """
-    try:
-        r = requests.get(
-            NOMINATIM,
-            params={"lat": lat, "lon": lon, "format": "jsonv2", "zoom": 10,
-                    "accept-language": "en"},
-            headers={"User-Agent": UA},
-            timeout=10,
-        )
-        addr = r.json().get("address", {})
-    except (requests.RequestException, ValueError):
-        return "unknown"
-    local = next(
-        (addr[k] for k in ("city", "town", "village", "municipality", "county", "state")
-         if addr.get(k)),
-        None,
-    )
-    country = addr.get("country")
-    return ", ".join(p for p in (local, country) if p) or "the middle of nowhere"
 
 
 # -------------------------------------------------------------------- imagery
@@ -269,33 +246,201 @@ def game_over():
     return session.get("played", 0) >= session.get("limit", 0)
 
 
+def begin(mode, limit, code=None):
+    """Reset the session for a new game. Shared by solo, create and join."""
+    session.clear()
+    session.update(score=0, played=0, mode=mode, limit=limit)
+    if code:
+        session["game"] = code
+        session["pid"] = secrets.token_hex(8)
+    if mode == "time":
+        # starts paused; the clock runs once the client says a street is on screen
+        session.update(remaining=limit * 60, running_since=None)
+    return jsonify(score=0, mode=mode, limit=limit, code=code,
+                   seconds_left=time_left())
+
+
 @app.route("/api/start", methods=["POST"])
 def start():
     body = request.get_json(silent=True) or {}
     mode, limit = body.get("mode"), body.get("limit")
     if mode not in MODES or limit not in MODES[mode]:
         return jsonify(error="pick a valid mode and length"), 400
-
-    session.clear()
-    session.update(score=0, played=0, mode=mode, limit=limit)
-    if mode == "time":
-        # starts paused; the clock runs once the client says a street is on screen
-        session.update(remaining=limit * 60, running_since=None)
-    return jsonify(score=0, mode=mode, limit=limit, seconds_left=time_left())
+    return begin(mode, limit)
 
 
-@app.route("/api/resume", methods=["POST"])
-def resume():
-    """Client calls this once the 360 view has finished loading."""
-    if not session.get("mode"):
-        return jsonify(error="no game in progress"), 400
+# ------------------------------------------------------------- multiplayer
+#
+# ponytail: games live in memory, so a restart drops them. That's the right
+# trade for a party game nobody resumes tomorrow -- move the dict into the
+# SQLite file already sitting next to it if games ever need to survive.
+
+GAMES = {}
+GAMES_LOCK = threading.Lock()
+CODE_CHARS = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # no 0/O/1/I to mistype
+CODE_LEN = 10
+GAME_TTL = 12 * 3600
+
+
+def new_code():
+    while True:
+        code = "".join(secrets.choice(CODE_CHARS) for _ in range(CODE_LEN))
+        if code not in GAMES:
+            return code
+
+
+def shared_round(code, index):
+    """Location for round `index` of a game: generated once, same for everyone."""
+    game = GAMES[code]
+    while True:
+        with GAMES_LOCK:
+            if index < len(game["rounds"]):
+                return game["rounds"][index]
+        found = random_image()      # slow, so never hold the lock across it
+        with GAMES_LOCK:
+            if index < len(game["rounds"]):
+                return game["rounds"][index]   # another player got there first
+            game["rounds"].append(found)
+
+
+MP_ROUNDS = 10       # multiplayer is always a 10-round match, no options
+STALE = 90           # a player silent this long stops holding the round up
+
+
+def touch(game):
+    """Mark this player alive, so a closed tab can't freeze everyone else."""
+    p = game["players"].get(session.get("pid"))
+    if p:
+        p["seen"] = time.time()
+
+
+def active_players(game):
+    cutoff = time.time() - STALE
+    return {pid: p for pid, p in game["players"].items() if p["seen"] > cutoff}
+
+
+def sync_state(game):
+    """Who still owes a guess, and who still owes a click of Next."""
+    active = active_players(game)
+    waiting_guess = [p["name"] for pid, p in active.items() if pid not in game["guessed"]]
+    waiting_ready = [p["name"] for pid, p in active.items() if pid not in game["ready"]]
+    return {
+        "you": session.get("pid"),
+        "round": game["round"],
+        "limit": game["limit"],
+        "all_guessed": not waiting_guess,
+        "all_ready": not waiting_ready,
+        "waiting_on": waiting_guess or waiting_ready,
+        "you_guessed": session.get("pid") in game["guessed"],
+        "you_ready": session.get("pid") in game["ready"],
+        "players": sorted(
+            [{"id": pid, "name": p["name"], "score": p["score"],
+              "played": p["played"], "guessed": pid in game["guessed"]}
+             for pid, p in game["players"].items()],
+            key=lambda p: -p["score"],
+        ),
+    }
+
+
+def join_game(code):
+    game = GAMES.get(code)
+    if not game:
+        return jsonify(error="no game with that code"), 404
+    body = begin(game["mode"], game["limit"], code)
+    with GAMES_LOCK:
+        pid = session["pid"]
+        game["players"][pid] = {
+            "name": "Player %d" % (len(game["players"]) + 1),
+            "score": 0,
+            "played": 0,
+            "seen": time.time(),
+        }
+        # joining mid-round: sit this one out rather than stalling everyone
+        if game["guessed"]:
+            game["guessed"][pid] = 0
+            game["ready"].add(pid)
+    return body
+
+
+@app.route("/api/create", methods=["POST"])
+def create():
+    cutoff = time.time() - GAME_TTL
+    with GAMES_LOCK:
+        for old in [c for c, g in GAMES.items() if g["created"] < cutoff]:
+            del GAMES[old]
+        code = new_code()
+        GAMES[code] = {"mode": "rounds", "limit": MP_ROUNDS, "rounds": [],
+                       "players": {}, "created": time.time(),
+                       "round": 0, "guessed": {}, "ready": set()}
+    return join_game(code)
+
+
+@app.route("/api/join", methods=["POST"])
+def join():
+    code = (request.get_json(silent=True) or {}).get("code", "")
+    return join_game(str(code).strip().upper())
+
+
+@app.route("/api/state")
+def state():
+    """Is this browser still in a game? Used to survive a page reload."""
+    game = GAMES.get(session.get("game"))
+    if not game or session.get("pid") not in game["players"]:
+        return jsonify(active=False)
     if game_over():
-        return jsonify(seconds_left=0, over=True)
-    # only a live round starts the clock -- never the result screen
-    if (session.get("mode") == "time" and session.get("answer")
-            and not session.get("running_since")):
-        session["running_since"] = time.time()
-    return jsonify(seconds_left=time_left(), over=False)
+        return jsonify(active=False)          # finished: send them to the title
+    with GAMES_LOCK:
+        touch(game)
+        return jsonify(active=True, code=session["game"], mode=game["mode"],
+                       score=session.get("score", 0),
+                       seconds_left=time_left(), **sync_state(game))
+
+
+@app.route("/api/quit", methods=["POST"])
+def quit_game():
+    """Leave a game. In multiplayer, stop holding the other players up."""
+    game = GAMES.get(session.get("game"))
+    if game:
+        with GAMES_LOCK:
+            pid = session.get("pid")
+            game["players"].pop(pid, None)
+            game["guessed"].pop(pid, None)
+            game["ready"].discard(pid)
+            # the quitter may have been the last one everyone was waiting on
+            if game["players"] and not set(active_players(game)) - game["ready"]:
+                game["round"] += 1
+                game["guessed"] = {}
+                game["ready"] = set()
+    session.clear()
+    return jsonify(ok=True)
+
+
+@app.route("/api/sync")
+def sync():
+    game = GAMES.get(session.get("game"))
+    if not game:
+        return jsonify(error="not in a multiplayer game"), 400
+    with GAMES_LOCK:
+        touch(game)
+        return jsonify(code=session["game"], **sync_state(game))
+
+
+@app.route("/api/ready", methods=["POST"])
+def ready():
+    """This player has seen the result and wants the next street."""
+    game = GAMES.get(session.get("game"))
+    if not game:
+        return jsonify(error="not in a multiplayer game"), 400
+    with GAMES_LOCK:
+        touch(game)
+        if session["pid"] not in game["guessed"]:
+            return jsonify(error="guess first", **sync_state(game)), 400
+        game["ready"].add(session["pid"])
+        if not set(active_players(game)) - game["ready"]:
+            game["round"] += 1          # everyone's in: move the match along
+            game["guessed"] = {}
+            game["ready"] = set()
+        return jsonify(**sync_state(game))
 
 
 @app.route("/api/round")
@@ -308,7 +453,10 @@ def new_round():
         return jsonify(error="game over"), 400
     pause_clock()  # loading a street is on the house
     try:
-        image_id, lat, lon = random_image()
+        if session.get("game") in GAMES:
+            image_id, lat, lon = shared_round(session["game"], GAMES[session["game"]]["round"])
+        else:
+            image_id, lat, lon = random_image()
     except Exception as e:
         return jsonify(error=str(e)), 502
     warm_one()
@@ -338,17 +486,25 @@ def guess():
     session["played"] = session.get("played", 0) + 1
     session.pop("answer", None)  # one guess per round
 
-    # round the guess for the cache key: 2dp is ~1 km, finer than a city name
+    game = GAMES.get(session.get("game"))
+    if game and session["pid"] in game["players"]:
+        with GAMES_LOCK:
+            touch(game)
+            game["players"][session["pid"]].update(
+                score=total, played=session["played"]
+            )
+            game["guessed"][session["pid"]] = points
+
     return jsonify(
         actual={"lat": answer[0], "lng": answer[1]},
-        actual_name=place_name(round(answer[0], 2), round(answer[1], 2)),
-        guess_name=place_name(round(lat, 2), round(lon, 2)),
+        distance_km=round(distance, 1),
         points=points,
         score=total,
         played=session["played"],
         limit=session.get("limit"),
         seconds_left=time_left(),
         over=game_over(),
+        sync=sync_state(game) if game else None,
     )
 
 
