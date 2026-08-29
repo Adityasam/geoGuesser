@@ -172,6 +172,14 @@
   #km small { display: block; margin-top: 5px; font-size: 12px; font-weight: 500;
               letter-spacing: .06em; text-transform: uppercase; opacity: .6; }
 
+  /* name pinned to the middle of each guess line */
+  .leaflet-tooltip.line-label { padding: 3px 9px; border: 0; border-radius: 7px;
+                                background: rgba(245, 158, 11, .95); color: #fff;
+                                font-size: 12px; font-weight: 650; white-space: nowrap;
+                                box-shadow: 0 1px 5px rgba(0, 0, 0, .35); }
+  .leaflet-tooltip.line-label.mine { background: rgba(37, 99, 235, .95); }
+  .leaflet-tooltip.line-label::before { display: none; }   /* no callout arrow */
+
   .spin { width: 13px; height: 13px; margin-right: 7px; vertical-align: -2px;
           display: inline-block; border: 2px solid rgba(15, 23, 42, .2);
           border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
@@ -271,6 +279,13 @@ L.control.zoom({ position: 'topright' }).addTo(map);
 L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
   { attribution: 'Tiles &copy; Esri', maxZoom: 19 }).addTo(map);
 
+// put a point on whichever world copy is nearest the reference, so lines take
+// the short way across the antimeridian instead of wrapping right around
+function near(ref, lat, lng) {
+  if (Math.abs(lng - ref.lng) > 180) lng += ref.lng > lng ? 360 : -360;
+  return L.latLng(lat, lng);
+}
+
 function pin(color) {
   return L.divIcon({
     className: '',
@@ -316,6 +331,9 @@ async function newRound(tries) {
   tries = tries || 0;
   layers.forEach(function (l) { map.removeLayer(l); });
   layers = [];
+  actualPoint = null;
+  actualTrue = null;
+  drawnGuesses = {};
   picked = null;
   over = false;
   guessBtn.disabled = true;
@@ -361,15 +379,17 @@ guessBtn.onclick = async function () {
   if (d.error) { setStatus(d.error); return; }
 
   over = true;
-  // draw the actual point on whichever world copy is nearer, so the line takes
-  // the short way across the antimeridian instead of wrapping right around
-  let lng = d.actual.lng;
-  if (Math.abs(lng - picked.lng) > 180) lng += picked.lng > lng ? 360 : -360;
-  const actual = L.latLng(d.actual.lat, lng);
+  const actual = near(picked, d.actual.lat, d.actual.lng);
+  actualPoint = actual;
+  actualTrue = L.latLng(d.actual.lat, d.actual.lng);
 
   layers.push(
     L.marker(actual, { icon: pin('#dc2626') }).addTo(map),
-    L.polyline([picked, actual], { color: '#dc2626', weight: 2, dashArray: '6,7' }).addTo(map)
+    L.polyline([picked, actual], { color: '#dc2626', weight: 2, dashArray: '6,7' })
+      .addTo(map)
+      .bindTooltip(code ? 'You &middot; ' + fmt(d.distance_km) : '',
+                   { permanent: !!code, direction: 'center',
+                     className: 'line-label mine' })
   );
   distEl.innerHTML = '+' + d.points.toLocaleString() + '<small>points</small>';
   kmEl.innerHTML = fmt(d.distance_km) + '<small>off target</small>';
@@ -382,6 +402,7 @@ guessBtn.onclick = async function () {
     const me = d.sync.players.find(function (p) { return p.id === d.sync.you; });
     myName = me ? me.name : '';
     renderBoard(d.sync);
+    drawGuesses(d.sync.guesses);
     showWait(d.sync);
   }
 
@@ -416,6 +437,7 @@ const boardList = document.getElementById('boardList');
 
 let mode = null, deadline = 0, ticker = null, finished = false;
 let code = null, poller = null, pendingGame = null, curRound = 0, myName = '';
+let actualPoint = null, actualTrue = null, drawnGuesses = {}, needsRefit = false;
 
 function renderBoard(d) {
   boardList.innerHTML = '';
@@ -429,6 +451,33 @@ function renderBoard(d) {
   });
 }
 
+// opponents appear as they guess -- the server only sends them once you have
+// guessed yourself, so nobody can copy a pin
+function drawGuesses(list) {
+  if (!actualPoint || !list) return;
+  let added = false;
+  list.forEach(function (g) {
+    if (drawnGuesses[g.id]) return;
+    const at = near(actualPoint, g.lat, g.lng);
+    drawnGuesses[g.id] = true;
+    added = true;
+    layers.push(
+      L.marker(at, { icon: pin('#f59e0b') }).addTo(map)
+        .bindTooltip(g.name + ' &middot; ' + g.points.toLocaleString() + ' pts'),
+      L.polyline([at, actualPoint],
+        { color: '#f59e0b', weight: 2, opacity: .8, dashArray: '4,7' }).addTo(map)
+        .bindTooltip(g.name + ' &middot; ' + fmt(map.distance(actualTrue, [g.lat, g.lng]) / 1000),
+                     { permanent: true, direction: 'center', className: 'line-label' })
+    );
+    if (!map.getBounds().contains(at)) needsRefit = true;
+  });
+  // only re-frame when someone landed off-screen, so the view does not jump
+  if (added && needsRefit) {
+    map.fitBounds(L.featureGroup(layers).getBounds(), { padding: [80, 80], maxZoom: 12 });
+    needsRefit = false;
+  }
+}
+
 // the whole match moves in lockstep: nobody sees the next street until
 // everyone has guessed this one and clicked through the result
 async function pollSync() {
@@ -436,6 +485,7 @@ async function pollSync() {
   const d = await fetch('/api/sync').then(function (r) { return r.json(); });
   if (d.error) return null;
   renderBoard(d);
+  drawGuesses(d.guesses);
   if (d.round !== curRound) { curRound = d.round; newRound(); return d; }
   if (over && !finished) showWait(d);
   return d;

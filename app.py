@@ -1,4 +1,5 @@
 import io
+import json
 import math
 import os
 import random
@@ -271,9 +272,10 @@ def start():
 
 # ------------------------------------------------------------- multiplayer
 #
-# ponytail: games live in memory, so a restart drops them. That's the right
-# trade for a party game nobody resumes tomorrow -- move the dict into the
-# SQLite file already sitting next to it if games ever need to survive.
+# Games are kept in memory for speed and mirrored into SQLite after every
+# change, because `debug=True` restarts the server on each file save -- which
+# used to drop every game in progress and fail joins with "no game with that
+# code". The dict is the working copy; the table is what survives a restart.
 
 GAMES = {}
 GAMES_LOCK = threading.Lock()
@@ -282,16 +284,50 @@ CODE_LEN = 10
 GAME_TTL = 12 * 3600
 
 
+def games_table():
+    with sqlite3.connect(DB) as db:
+        db.execute("CREATE TABLE IF NOT EXISTS games("
+                   "code TEXT PRIMARY KEY, data TEXT, created REAL)")
+
+
+def save_game(code):
+    """Mirror a game to disk. Call inside GAMES_LOCK, after every change."""
+    game = GAMES.get(code)
+    if not game:
+        return
+    blob = dict(game, ready=sorted(game["ready"]))   # a set is not JSON
+    with sqlite3.connect(DB) as db:
+        db.execute("INSERT OR REPLACE INTO games(code, data, created) VALUES(?,?,?)",
+                   (code, json.dumps(blob), game["created"]))
+
+
+def get_game(code):
+    """The live game for a code, reloading it from disk after a restart."""
+    if not code:
+        return None
+    if code in GAMES:
+        return GAMES[code]
+    with sqlite3.connect(DB) as db:
+        row = db.execute("SELECT data FROM games WHERE code=?", (code,)).fetchone()
+    if not row:
+        return None
+    game = json.loads(row[0])
+    game["ready"] = set(game["ready"])
+    game["rounds"] = [tuple(r) for r in game["rounds"]]   # json makes them lists
+    GAMES[code] = game
+    return game
+
+
 def new_code():
     while True:
         code = "".join(secrets.choice(CODE_CHARS) for _ in range(CODE_LEN))
-        if code not in GAMES:
+        if get_game(code) is None:
             return code
 
 
 def shared_round(code, index):
     """Location for round `index` of a game: generated once, same for everyone."""
-    game = GAMES[code]
+    game = get_game(code)
     while True:
         with GAMES_LOCK:
             if index < len(game["rounds"]):
@@ -301,6 +337,7 @@ def shared_round(code, index):
             if index < len(game["rounds"]):
                 return game["rounds"][index]   # another player got there first
             game["rounds"].append(found)
+            save_game(code)
 
 
 MP_ROUNDS = 10       # multiplayer is always a 10-round match, no options
@@ -324,8 +361,18 @@ def sync_state(game):
     active = active_players(game)
     waiting_guess = [p["name"] for pid, p in active.items() if pid not in game["guessed"]]
     waiting_ready = [p["name"] for pid, p in active.items() if pid not in game["ready"]]
+    # other players' pins are only revealed to someone who has already guessed
+    me = session.get("pid")
+    others = [
+        {"name": game["players"][pid]["name"], "points": g["points"],
+         "lat": g["lat"], "lng": g["lng"], "id": pid}
+        for pid, g in game["guessed"].items()
+        if pid != me and pid in game["players"] and g.get("lat") is not None
+    ] if me in game["guessed"] else []
+
     return {
-        "you": session.get("pid"),
+        "you": me,
+        "guesses": others,
         "round": game["round"],
         "limit": game["limit"],
         "all_guessed": not waiting_guess,
@@ -343,7 +390,7 @@ def sync_state(game):
 
 
 def join_game(code):
-    game = GAMES.get(code)
+    game = get_game(code)
     if not game:
         return jsonify(error="no game with that code"), 404
     body = begin(game["mode"], game["limit"], code)
@@ -357,8 +404,9 @@ def join_game(code):
         }
         # joining mid-round: sit this one out rather than stalling everyone
         if game["guessed"]:
-            game["guessed"][pid] = 0
+            game["guessed"][pid] = {"points": 0, "lat": None, "lng": None}
             game["ready"].add(pid)
+        save_game(code)
     return body
 
 
@@ -366,12 +414,15 @@ def join_game(code):
 def create():
     cutoff = time.time() - GAME_TTL
     with GAMES_LOCK:
-        for old in [c for c, g in GAMES.items() if g["created"] < cutoff]:
-            del GAMES[old]
+        for stale in [c for c, g in GAMES.items() if g["created"] < cutoff]:
+            del GAMES[stale]
+        with sqlite3.connect(DB) as db:
+            db.execute("DELETE FROM games WHERE created < ?", (cutoff,))
         code = new_code()
         GAMES[code] = {"mode": "rounds", "limit": MP_ROUNDS, "rounds": [],
                        "players": {}, "created": time.time(),
                        "round": 0, "guessed": {}, "ready": set()}
+        save_game(code)
     return join_game(code)
 
 
@@ -384,7 +435,7 @@ def join():
 @app.route("/api/state")
 def state():
     """Is this browser still in a game? Used to survive a page reload."""
-    game = GAMES.get(session.get("game"))
+    game = get_game(session.get("game"))
     if not game or session.get("pid") not in game["players"]:
         return jsonify(active=False)
     if game_over():
@@ -399,7 +450,7 @@ def state():
 @app.route("/api/quit", methods=["POST"])
 def quit_game():
     """Leave a game. In multiplayer, stop holding the other players up."""
-    game = GAMES.get(session.get("game"))
+    game = get_game(session.get("game"))
     if game:
         with GAMES_LOCK:
             pid = session.get("pid")
@@ -411,24 +462,26 @@ def quit_game():
                 game["round"] += 1
                 game["guessed"] = {}
                 game["ready"] = set()
+            save_game(session["game"])
     session.clear()
     return jsonify(ok=True)
 
 
 @app.route("/api/sync")
 def sync():
-    game = GAMES.get(session.get("game"))
+    game = get_game(session.get("game"))
     if not game:
         return jsonify(error="not in a multiplayer game"), 400
     with GAMES_LOCK:
         touch(game)
+        save_game(session["game"])
         return jsonify(code=session["game"], **sync_state(game))
 
 
 @app.route("/api/ready", methods=["POST"])
 def ready():
     """This player has seen the result and wants the next street."""
-    game = GAMES.get(session.get("game"))
+    game = get_game(session.get("game"))
     if not game:
         return jsonify(error="not in a multiplayer game"), 400
     with GAMES_LOCK:
@@ -440,6 +493,7 @@ def ready():
             game["round"] += 1          # everyone's in: move the match along
             game["guessed"] = {}
             game["ready"] = set()
+        save_game(session["game"])
         return jsonify(**sync_state(game))
 
 
@@ -453,8 +507,9 @@ def new_round():
         return jsonify(error="game over"), 400
     pause_clock()  # loading a street is on the house
     try:
-        if session.get("game") in GAMES:
-            image_id, lat, lon = shared_round(session["game"], GAMES[session["game"]]["round"])
+        mp = get_game(session.get("game"))
+        if mp:
+            image_id, lat, lon = shared_round(session["game"], mp["round"])
         else:
             image_id, lat, lon = random_image()
     except Exception as e:
@@ -486,14 +541,16 @@ def guess():
     session["played"] = session.get("played", 0) + 1
     session.pop("answer", None)  # one guess per round
 
-    game = GAMES.get(session.get("game"))
+    game = get_game(session.get("game"))
     if game and session["pid"] in game["players"]:
         with GAMES_LOCK:
             touch(game)
             game["players"][session["pid"]].update(
                 score=total, played=session["played"]
             )
-            game["guessed"][session["pid"]] = points
+            game["guessed"][session["pid"]] = {"points": points,
+                                               "lat": lat, "lng": lon}
+            save_game(session["game"])
 
     return jsonify(
         actual={"lat": answer[0], "lng": answer[1]},
@@ -508,9 +565,13 @@ def guess():
     )
 
 
+# order matters: games_table() creates cities.db, which would make the check
+# below think the city table already exists
 if not os.path.exists(DB):
     print("building cities.db from GeoNames, one time only...")
     print(f"  {build_db()} cities")
+
+games_table()
 
 if __name__ == "__main__":
     for _ in range(4):

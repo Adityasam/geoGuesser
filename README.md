@@ -132,7 +132,7 @@ mistypes one.
 Refreshing mid-match drops you straight back in with your score and round
 intact — the code in the URL plus the session cookie identify you, so no
 duplicate player is created. The signing key is persisted to `.flask_secret`,
-so sessions also survive a server restart (the in-memory games do not).
+so sessions survive a server restart too, as do the games themselves.
 
 ### Scoring
 
@@ -182,6 +182,7 @@ templates/          index.html — the whole front end, no build step
 static/earth.mp4    title screen background
 static/icons/       pin logo: favicon, touch icon, title mark
 cities.db           generated on first run, not in git
+                    (`cities` = GeoNames places, `games` = live matches)
 .flask_secret       generated on first run, not in git
 test_app.py         geo maths + city DB checks
 ```
@@ -219,10 +220,11 @@ Covers haversine against known distances, the tile ↔ lat/lon round-trip, and
   areas generally.
 - **`static/earth.mp4` is 24 MB.** Re-encode before deploying anywhere real:
   `ffmpeg -i static/earth.mp4 -c:v libx264 -crf 30 -an -movflags +faststart out.mp4`
-- **Multiplayer games live in memory** and are pruned after 12 hours, so a
-  server restart drops any match in progress. Moving `GAMES` into the SQLite
-  file already sitting next to it would fix that. Players are auto-named
-  "Player 1/2/3" by join order — no names, no accounts, no leaderboard.
+- **Multiplayer games are kept in memory and mirrored to SQLite** after every
+  change, so a restart (which `debug=True` does on every file save) doesn't
+  drop a match in progress. Codes are pruned after 12 hours. Players are
+  auto-named "Player 1/2/3" by join order — no names, no accounts, no
+  leaderboard.
 - **No lobby.** Players start whenever they like, the way a challenge link
   works; there is no "wait for everyone, host presses Go" step.
 - **Dev server only.** `app.run(debug=True)` — put it behind a real WSGI server
