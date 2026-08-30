@@ -290,6 +290,7 @@ def begin(mode, limit, code=None):
                    seconds_left=time_left())
 
 
+
 @app.route("/api/start", methods=["POST"])
 def start():
     body = request.get_json(silent=True) or {}
@@ -391,8 +392,14 @@ def active_players(game):
 def sync_state(game):
     """Who still owes a guess, and who still owes a click of Next."""
     active = active_players(game)
-    waiting_guess = [p["name"] for pid, p in active.items() if pid not in game["guessed"]]
-    waiting_ready = [p["name"] for pid, p in active.items() if pid not in game["ready"]]
+    all_guessed = all(pid in game["guessed"] for pid in active)
+    all_ready = all(pid in game["ready"] for pid in active)
+    # the waiting lists name *other* people; you already know about yourself
+    me_pid = session.get("pid")
+    waiting_guess = [p["name"] for pid, p in active.items()
+                     if pid not in game["guessed"] and pid != me_pid]
+    waiting_ready = [p["name"] for pid, p in active.items()
+                     if pid not in game["ready"] and pid != me_pid]
     # other players' pins are only revealed to someone who has already guessed
     me = session.get("pid")
     others = [
@@ -407,8 +414,8 @@ def sync_state(game):
         "guesses": others,
         "round": game["round"],
         "limit": game["limit"],
-        "all_guessed": not waiting_guess,
-        "all_ready": not waiting_ready,
+        "all_guessed": all_guessed,
+        "all_ready": all_ready,
         "waiting_on": waiting_guess or waiting_ready,
         "you_guessed": session.get("pid") in game["guessed"],
         "you_ready": session.get("pid") in game["ready"],
@@ -421,7 +428,13 @@ def sync_state(game):
     }
 
 
-def join_game(code):
+def clean_name(name, fallback):
+    """Trim a player-supplied name to something safe to show on a scoreboard."""
+    name = " ".join(str(name or "").split())[:20]
+    return name or fallback
+
+
+def join_game(code, name=None):
     game = get_game(code)
     if not game:
         return jsonify(error="no game with that code"), 404
@@ -429,7 +442,7 @@ def join_game(code):
     with GAMES_LOCK:
         pid = session["pid"]
         game["players"][pid] = {
-            "name": "Player %d" % (len(game["players"]) + 1),
+            "name": clean_name(name, "Player %d" % (len(game["players"]) + 1)),
             "score": 0,
             "played": 0,
             "seen": time.time(),
@@ -455,13 +468,13 @@ def create():
                        "players": {}, "created": time.time(),
                        "round": 0, "guessed": {}, "ready": set()}
         save_game(code)
-    return join_game(code)
+    return join_game(code, (request.get_json(silent=True) or {}).get("name"))
 
 
 @app.route("/api/join", methods=["POST"])
 def join():
-    code = (request.get_json(silent=True) or {}).get("code", "")
-    return join_game(str(code).strip().upper())
+    body = request.get_json(silent=True) or {}
+    return join_game(str(body.get("code", "")).strip().upper(), body.get("name"))
 
 
 @app.route("/api/state")

@@ -80,6 +80,16 @@
   h2 { margin: 0 0 4px; font-size: 13px; font-weight: 600; opacity: .5;
        letter-spacing: .08em; text-transform: uppercase; }
 
+  #nameRow { display: flex; flex-direction: column; gap: 6px; font-size: 12px;
+             font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+             opacity: .75; }
+  #nameInput { padding: 11px 13px; border-radius: 10px; font: 600 15px/1 inherit;
+               letter-spacing: normal; text-transform: none; color: #fff;
+               background: rgba(255, 255, 255, .08);
+               border: 1px solid rgba(255, 255, 255, .2); }
+  #nameInput::placeholder { color: rgba(255, 255, 255, .3); }
+  #nameInput:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+
   /* join by code */
   #joinForm { display: flex; flex-wrap: wrap; gap: 8px; }
   #codeInput { flex: 1; min-width: 140px; padding: 13px 14px; border-radius: 10px;
@@ -217,6 +227,9 @@
 
     <section id="multi">
       <h2>Multiplayer</h2>
+      <label id="nameRow">Your name
+        <input id="nameInput" maxlength="20" autocomplete="off" placeholder="Player 1">
+      </label>
       <button class="mode" id="createBtn">Create game
         <small>10 rounds &mdash; share the code with your friends</small></button>
       <button class="mode" id="joinBtn">Join game
@@ -422,8 +435,6 @@ guessBtn.onclick = async function () {
   nextBtn.dataset.last = d.over ? '1' : '0';
   nextBtn.textContent = d.over ? 'See final score' : 'Next round';
   if (code && d.sync) {
-    const me = d.sync.players.find(function (p) { return p.id === d.sync.you; });
-    myName = me ? me.name : '';
     renderBoard(d.sync);
     drawGuesses(d.sync.guesses);
     showWait(d.sync);
@@ -459,7 +470,7 @@ const board = document.getElementById('board');
 const boardList = document.getElementById('boardList');
 
 let mode = null, deadline = 0, ticker = null, finished = false;
-let code = null, poller = null, pendingGame = null, curRound = 0, myName = '';
+let code = null, poller = null, pendingGame = null, curRound = 0;
 let actualPoint = null, actualTrue = null, drawnGuesses = {}, needsRefit = false;
 
 function renderBoard(d) {
@@ -467,7 +478,7 @@ function renderBoard(d) {
   d.players.forEach(function (p) {
     const li = document.createElement('li');
     if (p.id === d.you) li.className = 'you';
-    li.innerHTML = '<span>' + p.name + (p.id === d.you ? ' (you)' : '') +
+    li.innerHTML = '<span>' + esc(p.name) + (p.id === d.you ? ' (you)' : '') +
                    (p.guessed ? '' : ' <span class="rounds">guessing\u2026</span>') +
                    '</span><span>' + p.score.toLocaleString() + '</span>';
     boardList.appendChild(li);
@@ -486,10 +497,10 @@ function drawGuesses(list) {
     added = true;
     layers.push(
       L.marker(at, { icon: pin('#f59e0b') }).addTo(map)
-        .bindTooltip(g.name + ' &middot; ' + g.points.toLocaleString() + ' pts'),
+        .bindTooltip(esc(g.name) + ' &middot; ' + g.points.toLocaleString() + ' pts'),
       L.polyline([at, actualPoint],
         { color: '#f59e0b', weight: 2, opacity: .8, dashArray: '4,7' }).addTo(map)
-        .bindTooltip(g.name + ' &middot; ' + fmt(map.distance(actualTrue, [g.lat, g.lng]) / 1000),
+        .bindTooltip(esc(g.name) + ' &middot; ' + fmt(map.distance(actualTrue, [g.lat, g.lng]) / 1000),
                      { permanent: true, direction: 'center', className: 'line-label' })
     );
     if (!map.getBounds().contains(at)) needsRefit = true;
@@ -516,12 +527,15 @@ async function pollSync() {
 
 function showWait(d) {
   if (nextBtn.dataset.last === '1') return;      // last round, offer the results
-  const others = d.waiting_on.filter(function (n) { return n !== myName; });
-  const blocked = !d.all_guessed || d.you_ready;
-  nextBtn.disabled = blocked;
-  nextBtn.textContent = blocked
-    ? (others.length ? 'Waiting for ' + others.join(', ') : 'Waiting\u2026')
-    : 'Next round';
+  if (!d.you_ready) {                            // click Next whenever you like
+    nextBtn.disabled = false;
+    nextBtn.textContent = 'Next round';
+    return;
+  }
+  nextBtn.disabled = true;                       // you are through, they are not
+  nextBtn.textContent = d.waiting_on.length
+    ? 'Waiting for ' + d.waiting_on.join(', ')
+    : 'Waiting…';
 }
 
 function showModes(show) {
@@ -568,13 +582,14 @@ document.getElementById('joinBtn').onclick = function () {
 joinForm.onsubmit = async function (e) {
   e.preventDefault();
   joinErr.textContent = '';
-  const d = await post('/api/join', { code: codeInput.value.trim().toUpperCase() });
+  const d = await post('/api/join', { code: codeInput.value.trim().toUpperCase(),
+                                     name: playerName() });
   if (d.error) { joinErr.textContent = d.error; return; }
   enterGame(d);
 };
 
 async function createGame() {
-  const d = await post('/api/create');
+  const d = await post('/api/create', { name: playerName() });
   if (d.error) { alert(d.error); return; }
   pendingGame = d;
   document.getElementById('codeText').textContent = d.code;
@@ -608,6 +623,25 @@ quitBtn.onclick = async function () {
 backBtn.onclick = function () { showModes(true); };
 document.getElementById('startBtn').onclick = function () { showModes(true); };
 
+const nameInput = document.getElementById('nameInput');
+const NAME_KEY = 'geoguesser.name';
+
+try { nameInput.value = localStorage.getItem(NAME_KEY) || ''; } catch (e) { /* private mode */ }
+
+// remembered between games, editable before each one
+function playerName() {
+  const n = nameInput.value.trim();
+  try { n ? localStorage.setItem(NAME_KEY, n) : localStorage.removeItem(NAME_KEY); }
+  catch (e) { /* storage unavailable; the name just is not remembered */ }
+  return n;
+}
+
+function esc(t) {
+  return String(t).replace(/[&<>"]/g, function (ch) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch];
+  });
+}
+
 function setCodeInUrl(c) {
   history.replaceState({}, '', c ? '?g=' + c : location.pathname);
 }
@@ -618,7 +652,7 @@ async function restoreFromUrl() {
   if (!wanted) return;
   const st = await fetch('/api/state').then(function (r) { return r.json(); });
   if (st.active && st.code === wanted) return enterGame(st);   // same browser, same game
-  const d = await post('/api/join', { code: wanted });         // new player on this link
+  const d = await post('/api/join', { code: wanted, name: playerName() });
   if (d.error) { setCodeInUrl(null); return; }
   enterGame(d);
 }
