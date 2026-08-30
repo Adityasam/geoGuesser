@@ -75,21 +75,24 @@ def build_db():
     return len(rows)
 
 
-def pick_city():
-    """A random (id, lat, lon), skipping cities already known to have no 360s.
+def pick_city(exclude=()):
+    """A random (id, lat, lon, country), skipping cities known to have no 360s.
 
     ponytail: population-weighted via `uniform / population`, taking the
     minimum -- a one-expression weighted sample. Big cities come up more often
     because they're likelier to have coverage, so fewer wasted tile fetches.
     """
+    sql = """SELECT id, lat, lon, country FROM cities
+             WHERE population >= ? AND pano IS NOT 0"""
+    args = [MIN_POP]
+    exclude = [c for c in exclude if c]
+    if exclude:
+        sql += " AND country NOT IN (%s)" % ",".join("?" * len(exclude))
+        args += exclude
+    sql += """ ORDER BY (ABS(RANDOM()) % 1000000) / CAST(population AS REAL)
+              LIMIT 1"""
     with sqlite3.connect(DB) as db:
-        return db.execute(
-            """SELECT id, lat, lon FROM cities
-               WHERE population >= ? AND pano IS NOT 0
-               ORDER BY (ABS(RANDOM()) % 1000000) / CAST(population AS REAL)
-               LIMIT 1""",
-            (MIN_POP,),
-        ).fetchone()
+        return db.execute(sql, args).fetchone()
 
 
 def mark_pano(city_id, has_pano):
@@ -169,43 +172,69 @@ def city_images(lat, lon):
 
 def explore(city):
     """Fetch one city's tile and record what it held. Returns its images."""
-    city_id, lat, lon = city
+    city_id, lat, lon, country = city
     try:
         images = city_images(lat, lon)
     except requests.RequestException:
         return ()
     mark_pano(city_id, bool(images))
-    if images and (lat, lon) not in WARM:
-        WARM.append((lat, lon))
+    if images and (country, lat, lon) not in WARM:
+        WARM.append((country, lat, lon))
     return images
 
 
 def warm_one():
     """Cache one more city in the background, so rounds don't wait on a tile."""
-    city = pick_city()
-    if city and (city[1], city[2]) not in WARM:
+    stocked = {w[0] for w in WARM}
+    city = pick_city(stocked) or pick_city()   # prefer a country we lack
+    if city and (city[3], city[1], city[2]) not in WARM:
         threading.Thread(target=explore, args=(city,), daemon=True).start()
 
 
-def random_image():
-    """Return (image_id, lat, lon) from a random city with 360 coverage.
+RECENT_COUNTRIES = 4   # how far back to avoid repeating a country
 
-    ponytail: serves from the warm set when possible -- a cold tile is a ~10 MB
-    download and takes seconds. The background warmer keeps that set stocked and
-    rotating, so the player sees new cities without ever waiting for one.
+
+def random_image(recent=()):
+    """Return (image_id, lat, lon, country) from a random covered city.
+
+    `recent` is the countries just played, most recent first. The newest one is
+    a hard no -- consecutive rounds are never in the same country. The rest are
+    a preference, so a thin warm set degrades to variety-when-possible instead
+    of ping-ponging between two countries.
     """
-    if WARM:
-        images = city_images(*random.choice(WARM))
-        if images:
-            return random.choice(images)
+    recent = [c for c in recent if c]
+    previous, older = (recent[0], set(recent[1:])) if recent else (None, set())
 
-    for _ in range(10):  # cold start, or the warm set went stale
-        city = pick_city()
-        if not city:
-            break
-        images = explore(city)
-        if images:
-            return random.choice(images)
+    pool = [w for w in WARM if w[0] != previous]
+    fresh = [w for w in pool if w[0] not in older]
+
+    def from_warm(candidates):
+        if candidates:
+            country, lat, lon = random.choice(candidates)
+            images = city_images(lat, lon)
+            if images:
+                return random.choice(images) + (country,)
+        return None
+
+    def from_cold(avoid):
+        for _ in range(6):
+            city = pick_city(avoid)
+            if not city:
+                return None
+            images = explore(city)
+            if images:
+                return random.choice(images) + (city[3],)
+        return None
+
+    # a cold fetch costs a few seconds but adds a new country to the warm pool,
+    # which beats ping-ponging between the two or three already in it
+    for attempt in (lambda: from_warm(fresh),
+                    lambda: from_cold(recent),
+                    lambda: from_warm(pool),
+                    lambda: from_cold([previous])):
+        found = attempt()
+        if found:
+            return found
     raise RuntimeError("no Mapillary 360 imagery found, try again")
 
 
@@ -313,7 +342,9 @@ def get_game(code):
         return None
     game = json.loads(row[0])
     game["ready"] = set(game["ready"])
-    game["rounds"] = [tuple(r) for r in game["rounds"]]   # json makes them lists
+    # json makes them lists; pad rounds saved before countries were tracked
+    game["rounds"] = [tuple(r) if len(r) == 4 else tuple(r) + (None,)
+                      for r in game["rounds"]]
     GAMES[code] = game
     return game
 
@@ -332,7 +363,8 @@ def shared_round(code, index):
         with GAMES_LOCK:
             if index < len(game["rounds"]):
                 return game["rounds"][index]
-        found = random_image()      # slow, so never hold the lock across it
+            recent = [r[3] for r in reversed(game["rounds"][-RECENT_COUNTRIES:])]
+        found = random_image(recent)  # slow, so never hold the lock across it
         with GAMES_LOCK:
             if index < len(game["rounds"]):
                 return game["rounds"][index]   # another player got there first
@@ -513,14 +545,15 @@ def new_round():
     try:
         mp = get_game(session.get("game"))
         if mp:
-            image_id, lat, lon = shared_round(session["game"], mp["round"])
+            image_id, lat, lon, country = shared_round(session["game"], mp["round"])
         else:
-            image_id, lat, lon = random_image()
+            image_id, lat, lon, country = random_image(session.get("recent", []))
     except Exception as e:
         return jsonify(error=str(e)), 502
     warm_one()
     session["answer"] = (lat, lon)  # answer stays server-side, no devtools peeking
     session["image"] = str(image_id)
+    session["recent"] = ([country] + session.get("recent", []))[:RECENT_COUNTRIES]
     return jsonify(image_id=session["image"])
 
 
@@ -580,6 +613,6 @@ if not os.path.exists(DB):
 games_table()
 
 if __name__ == "__main__":
-    for _ in range(4):
+    for _ in range(6):   # a spread of countries ready before the first round
         warm_one()
     app.run(debug=True)

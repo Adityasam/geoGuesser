@@ -18,12 +18,18 @@ for lat, lon in [(52.516, 13.388), (-33.925, 18.424), (35.69, 139.70)]:
 with sqlite3.connect(DB) as db:
     assert db.execute("SELECT COUNT(*) FROM cities").fetchone()[0] > 30000
 for _ in range(20):
-    cid, lat, lon = pick_city()
+    cid, lat, lon, country = pick_city()
     with sqlite3.connect(DB) as db:
         pop, pano = db.execute(
             "SELECT population, pano FROM cities WHERE id=?", (cid,)
         ).fetchone()
     assert pop >= MIN_POP and pano != 0
     assert -90 <= lat <= 90 and -180 <= lon <= 180
+    assert country
+
+# consecutive rounds must never repeat a country
+for _ in range(15):
+    banned = pick_city()[3]
+    assert pick_city([banned])[3] != banned
 
 print("ok")

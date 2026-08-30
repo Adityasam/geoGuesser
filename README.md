@@ -18,7 +18,9 @@ even a 400 m one. So the app works backwards from a list of real places:
 
 1. **Pick a city.** A population-weighted random draw from 34,124 GeoNames
    cities held in a local SQLite table. Bigger cities come up more often
-   because they're likelier to have coverage.
+   because they're likelier to have coverage. Consecutive rounds are never in
+   the same country, and the last four countries are avoided where possible —
+   in both solo and multiplayer.
 2. **Probe for imagery.** Fetch that city's Mapillary vector tile at zoom 14 —
    the only zoom whose public tiles carry the `image` layer. A z14 tile is only
    ~1 km wide, so a city centre often lands just outside its own coverage; the
@@ -168,6 +170,7 @@ All in [`app.py`](app.py):
 | `MIN_POP` | `50000` | Lower for obscurer cities, at a worse coverage hit rate |
 | `MIN_PANOS` | `10` | Minimum panoramas for a tile to count as covered |
 | `WARM` maxlen | `24` | How many cities stay instantly available |
+| `RECENT_COUNTRIES` | `4` | How far back a country is avoided (the last is a hard no) |
 | `MP_ROUNDS` | `10` | Rounds in a multiplayer match |
 | `STALE` | `90` | Seconds before a silent player stops holding up a round |
 | `GAME_TTL` | `12 h` | How long an unused game code lives |
