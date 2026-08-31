@@ -16,6 +16,8 @@ import requests
 from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template, request, session
 
+from regions import CONTINENT_OF, CONTINENTS, COUNTRY_NAMES
+
 load_dotenv()
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -75,12 +77,16 @@ def build_db():
     return len(rows)
 
 
-def pick_city(exclude=()):
+def pick_city(exclude=(), only=None):
     """A random (id, lat, lon, country), skipping cities known to have no 360s.
 
     ponytail: population-weighted via `uniform / population`, taking the
     minimum -- a one-expression weighted sample. Big cities come up more often
     because they're likelier to have coverage, so fewer wasted tile fetches.
+
+    `only`, when given, is an iterable of ISO country codes the draw is confined
+    to -- the difficulty picker's Easy (one country) and Medium (one continent)
+    scopes. None (the default) means the whole world, unchanged.
     """
     sql = """SELECT id, lat, lon, country FROM cities
              WHERE population >= ? AND pano IS NOT 0"""
@@ -89,6 +95,10 @@ def pick_city(exclude=()):
     if exclude:
         sql += " AND country NOT IN (%s)" % ",".join("?" * len(exclude))
         args += exclude
+    if only:
+        only = list(only)
+        sql += " AND country IN (%s)" % ",".join("?" * len(only))
+        args += only
     sql += """ ORDER BY (ABS(RANDOM()) % 1000000) / CAST(population AS REAL)
               LIMIT 1"""
     with sqlite3.connect(DB) as db:
@@ -194,18 +204,28 @@ def warm_one():
 RECENT_COUNTRIES = 4   # how far back to avoid repeating a country
 
 
-def random_image(recent=()):
+def random_image(recent=(), scope=None):
     """Return (image_id, lat, lon, country) from a random covered city.
 
     `recent` is the countries just played, most recent first. The newest one is
     a hard no -- consecutive rounds are never in the same country. The rest are
     a preference, so a thin warm set degrades to variety-when-possible instead
     of ping-ponging between two countries.
+
+    `scope`, when given, is a set of ISO country codes every round must come
+    from -- the Easy (one country) and Medium (one continent) difficulties.
+    A one-country scope drops the no-repeat rule, since by definition every
+    round is that same country.
     """
     recent = [c for c in recent if c]
+    if scope is not None and len(scope) < 2:
+        recent = []
     previous, older = (recent[0], set(recent[1:])) if recent else (None, set())
 
-    pool = [w for w in WARM if w[0] != previous]
+    def in_scope(country):
+        return scope is None or country in scope
+
+    pool = [w for w in WARM if w[0] != previous and in_scope(w[0])]
     fresh = [w for w in pool if w[0] not in older]
 
     def from_warm(candidates):
@@ -217,8 +237,8 @@ def random_image(recent=()):
         return None
 
     def from_cold(avoid):
-        for _ in range(6):
-            city = pick_city(avoid)
+        for _ in range(12 if scope else 6):
+            city = pick_city(avoid, scope)
             if not city:
                 return None
             images = explore(city)
@@ -291,13 +311,60 @@ def begin(mode, limit, code=None):
 
 
 
+# ---------------------------------------------------------------- difficulty
+#
+# A difficulty pick only narrows which countries a round is drawn from. Scoring,
+# the timer, round counts and the result screen are all untouched.
+
+
+def difficulty_scope(difficulty, area):
+    """Resolve a difficulty pick to the ISO country codes it permits.
+
+    None  -- Hard, or nothing sent: the whole world, no filter (unchanged).
+    set   -- Easy (the one chosen country) or Medium (a continent's countries).
+    False -- the pick was malformed; the caller should answer 400.
+    """
+    if not difficulty or difficulty == "hard":
+        return None
+    if difficulty == "easy":
+        code = str(area or "").strip().upper()
+        return {code} if code in CONTINENT_OF else False
+    if difficulty == "medium":
+        want = str(area or "").strip().lower()
+        picked = {c for c, cont in CONTINENT_OF.items() if cont.lower() == want}
+        return picked or False
+    return False
+
+
+@app.route("/api/regions")
+def regions():
+    """Countries and continents the difficulty picker may offer -- limited to
+    the ones the local cities table actually holds."""
+    with sqlite3.connect(DB) as db:
+        have = {r[0] for r in db.execute(
+            "SELECT DISTINCT country FROM cities WHERE population >= ?", (MIN_POP,)
+        )}
+    countries = sorted(
+        ({"code": c, "name": COUNTRY_NAMES.get(c, c), "continent": CONTINENT_OF[c]}
+         for c in have if c in CONTINENT_OF),
+        key=lambda d: d["name"],
+    )
+    return jsonify(continents=CONTINENTS, countries=countries)
+
+
 @app.route("/api/start", methods=["POST"])
 def start():
     body = request.get_json(silent=True) or {}
     mode, limit = body.get("mode"), body.get("limit")
     if mode not in MODES or limit not in MODES[mode]:
         return jsonify(error="pick a valid mode and length"), 400
-    return begin(mode, limit)
+    scope = difficulty_scope(body.get("difficulty"), body.get("area"))
+    if scope is False:
+        return jsonify(error="pick a valid difficulty option"), 400
+    resp = begin(mode, limit)
+    if scope:
+        session["scope"] = sorted(scope)  # ISO codes every round must match
+    return resp
 
 
 # ------------------------------------------------------------- multiplayer
@@ -560,7 +627,10 @@ def new_round():
         if mp:
             image_id, lat, lon, country = shared_round(session["game"], mp["round"])
         else:
-            image_id, lat, lon, country = random_image(session.get("recent", []))
+            scope = session.get("scope")
+            image_id, lat, lon, country = random_image(
+                session.get("recent", []), set(scope) if scope else None
+            )
     except Exception as e:
         return jsonify(error=str(e)), 502
     warm_one()
