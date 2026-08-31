@@ -100,6 +100,20 @@ points and how far off you were. **Quit** in the top-left leaves any game.
 | **Time Attack** | 5 / 10 / 15 minutes | The clock runs out |
 | **Fixed Rounds** | 5 / 10 / 15 / 30 rounds | You've used every guess |
 
+After the mode and length, a solo game asks for a **difficulty**, which only
+narrows where the streets come from — scoring, the clock and the round count are
+untouched:
+
+| Difficulty | You pick | Rounds are drawn from |
+|---|---|---|
+| **Easy** | a country | that country only |
+| **Medium** | a continent | any supported country on that continent |
+| **Hard** | nothing | the whole world (the original behaviour) |
+
+The country and continent lists come from `GET /api/regions`, which is the set
+of countries already in `cities.db` mapped through [`regions.py`](regions.py)
+(ISO code → name and continent). Multiplayer is always Hard.
+
 In Time Attack the clock only runs while a street is actually on screen. It's
 paused while a tile loads and while you're reading a result, so a slow download
 never costs you time. The server is the authority on it; the browser countdown
@@ -181,6 +195,7 @@ All in [`app.py`](app.py):
 
 ```
 app.py              Flask app: city selection, tile probing, scoring, routes
+regions.py          ISO country code → name + continent, for the difficulty picker
 templates/          index.html — the whole front end, no build step
 static/earth.mp4    title screen background
 static/icons/       pin logo: favicon, touch icon, title mark
@@ -194,7 +209,8 @@ test_app.py         geo maths + city DB checks
 
 | Route | Purpose |
 |---|---|
-| `POST /api/start` | `{mode, limit}` — begins a solo game, resets the score |
+| `GET /api/regions` | Countries and continents the difficulty picker can offer |
+| `POST /api/start` | `{mode, limit, difficulty?, area?}` — begins a solo game, resets the score |
 | `GET /api/round` | Returns an `image_id`, stashes the answer in the session |
 | `POST /api/resume` | Client says the street is on screen; starts the clock |
 | `POST /api/guess` | `{lat, lng}` — scores it, returns the real location |

@@ -124,6 +124,23 @@
           background: none; color: #fff; opacity: .5; font-weight: 500; }
   #back:hover { opacity: .9; background: none; }
 
+  /* difficulty picker: same dark cards as the mode sheet */
+  #diff { width: min(520px, 92vw); margin-top: 24px; text-align: left;
+          display: flex; flex-direction: column; gap: 12px; }
+  #diffCards { display: grid; gap: 10px; }
+  #diffCards .mode b { font-size: 15px; letter-spacing: .04em; }
+  #areaPick { display: flex; flex-wrap: wrap; gap: 8px; }
+  #areaSelect { flex: 1; min-width: 180px; padding: 12px 14px; border-radius: 10px;
+                font: 600 15px/1 inherit; color: #fff; cursor: pointer;
+                background: rgba(255, 255, 255, .08);
+                border: 1px solid rgba(255, 255, 255, .2); }
+  #areaSelect:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  /* the native dropdown list paints on a light background */
+  #areaSelect option, #areaSelect optgroup { color: #0f172a; }
+  #diffBack { align-self: flex-start; margin-top: 2px; padding: 6px 0;
+              background: none; color: #fff; opacity: .5; font-weight: 500; }
+  #diffBack:hover { opacity: .9; background: none; }
+
   /* live scoreboard, multiplayer only */
   #board { position: absolute; top: 16px; right: 16px; z-index: 600;
            min-width: 200px; padding: 12px 14px; border-radius: 14px;
@@ -249,6 +266,23 @@
     <p id="shareNote">A 10-round match. Everyone gets the same locations, and
        the next street only loads once everyone has guessed.</p>
     <button id="playBtn">Start playing</button>
+  </div>
+
+  <div id="diff" hidden>
+    <h2>Choose a difficulty</h2>
+    <div id="diffCards">
+      <button class="mode" data-diff="easy"><b>EASY</b>
+        <small>Choose a Country</small></button>
+      <button class="mode" data-diff="medium"><b>MEDIUM</b>
+        <small>Choose a Continent</small></button>
+      <button class="mode" data-diff="hard"><b>HARD</b>
+        <small>Whole World</small></button>
+    </div>
+    <div id="areaPick" hidden>
+      <select id="areaSelect" aria-label="Country or continent"></select>
+      <button id="areaGo">Start game</button>
+    </div>
+    <button id="diffBack">&larr; Back</button>
   </div>
 </div>
 
@@ -469,9 +503,14 @@ const shareEl = document.getElementById('share');
 const board = document.getElementById('board');
 const boardList = document.getElementById('boardList');
 
+const diffEl = document.getElementById('diff');
+const areaPick = document.getElementById('areaPick');
+const areaSelect = document.getElementById('areaSelect');
+
 let mode = null, deadline = 0, ticker = null, finished = false;
 let code = null, poller = null, pendingGame = null, curRound = 0;
 let actualPoint = null, actualTrue = null, drawnGuesses = {}, needsRefit = false;
+let pendingSolo = null, curDiff = null, regionData = null;
 
 function renderBoard(d) {
   boardList.innerHTML = '';
@@ -549,6 +588,8 @@ function showModes(show) {
   joinForm.hidden = true;
   joinErr.textContent = '';
   shareEl.hidden = true;
+  diffEl.hidden = true;
+  areaPick.hidden = true;
   multiSection.hidden = false;
 }
 
@@ -667,9 +708,72 @@ function post(url, body) {
   }).then(function (r) { return r.json(); });
 }
 
-async function beginGame(m, limit) {
-  const d = await post('/api/start', { mode: m, limit: limit });
+// solo only: choose mode + length, then a difficulty, then (Easy/Medium) an
+// area. Difficulty just scopes which countries a round is drawn from -- it
+// touches nothing about scoring, the timer, rounds or the result screen.
+function beginGame(m, limit) {
+  pendingSolo = { mode: m, limit: limit };
+  curDiff = null;
+  showDifficulty();
+}
+
+function showDifficulty() {
+  sheet.classList.remove('show');
+  shareEl.hidden = true;
+  document.getElementById('startBtn').hidden = true;
+  areaPick.hidden = true;
+  areaSelect.innerHTML = '';
+  diffEl.hidden = false;
+}
+
+function loadRegions() {
+  if (!regionData) {
+    regionData = fetch('/api/regions').then(function (r) { return r.json(); });
+  }
+  return regionData;
+}
+
+async function fillAreas(diff) {
+  const data = await loadRegions();
+  areaSelect.innerHTML = '';
+  if (diff === 'medium') {
+    areaSelect.appendChild(new Option('Select a continent…', ''));
+    data.continents.forEach(function (c) { areaSelect.appendChild(new Option(c, c)); });
+  } else {
+    areaSelect.appendChild(new Option('Select a country…', ''));
+    data.continents.forEach(function (cont) {
+      const grp = document.createElement('optgroup');
+      grp.label = cont;
+      data.countries.forEach(function (c) {
+        if (c.continent === cont) grp.appendChild(new Option(c.name, c.code));
+      });
+      if (grp.children.length) areaSelect.appendChild(grp);
+    });
+  }
+}
+
+document.querySelectorAll('#diffCards .mode').forEach(function (btn) {
+  btn.onclick = async function () {
+    curDiff = btn.dataset.diff;
+    if (curDiff === 'hard') { launchSolo(null); return; }   // Hard: straight in
+    await fillAreas(curDiff);
+    areaPick.hidden = false;
+  };
+});
+
+document.getElementById('areaGo').onclick = function () {
+  if (areaSelect.value) launchSolo(areaSelect.value);
+};
+
+document.getElementById('diffBack').onclick = function () { showModes(true); };
+
+async function launchSolo(area) {
+  const body = { mode: pendingSolo.mode, limit: pendingSolo.limit };
+  if (curDiff) body.difficulty = curDiff;
+  if (area) body.area = area;
+  const d = await post('/api/start', body);
   if (d.error) { alert(d.error); return; }
+  diffEl.hidden = true;
   enterGame(d);
 }
 
