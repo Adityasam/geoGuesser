@@ -1,3 +1,4 @@
+import concurrent.futures
 import io
 import json
 import math
@@ -168,15 +169,26 @@ def city_images(lat, lon):
     ponytail: a z14 tile is only ~1 km wide, so a city centre often lands just
     outside its own coverage -- probing a few neighbouring tiles roughly doubles
     the hit rate. Stops at the first good one; empty tiles come back in ~1 s.
+
+    The home tile is tried first (usually a hit); on a miss the 3 neighbours are
+    fetched concurrently, so a miss costs one tile's latency instead of four.
     """
     x, y = deg2tile(lat, lon, ZOOM)
+    home = tile_panos(x, y)
+    if len(home) >= MIN_PANOS:
+        return home
     neighbours = [(x + dx, y + dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1)
                   if (dx, dy) != (0, 0)]
     random.shuffle(neighbours)
-    for tx, ty in [(x, y)] + neighbours[:3]:
-        found = tile_panos(tx, ty)
-        if len(found) >= MIN_PANOS:
-            return found
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
+        futures = [ex.submit(tile_panos, tx, ty) for tx, ty in neighbours[:3]]
+        for fut in concurrent.futures.as_completed(futures):
+            try:
+                found = fut.result()
+            except requests.RequestException:
+                continue
+            if len(found) >= MIN_PANOS:
+                return found
     return ()
 
 
@@ -193,10 +205,18 @@ def explore(city):
     return images
 
 
-def warm_one():
-    """Cache one more city in the background, so rounds don't wait on a tile."""
+def warm_one(scope=None):
+    """Cache one more city in the background, so rounds don't wait on a tile.
+
+    `scope`, when given, keeps the warm pool stocked with cities the current
+    game can actually use. Without it an Easy/Medium game warms world cities it
+    then filters out, so every round pays a cold tile fetch.
+    """
     stocked = {w[0] for w in WARM}
-    city = pick_city(stocked) or pick_city()   # prefer a country we lack
+    if scope:
+        city = pick_city(stocked, only=scope) or pick_city(only=scope)
+    else:
+        city = pick_city(stocked) or pick_city()   # prefer a country we lack
     if city and (city[3], city[1], city[2]) not in WARM:
         threading.Thread(target=explore, args=(city,), daemon=True).start()
 
@@ -236,14 +256,27 @@ def random_image(recent=(), scope=None):
                 return random.choice(images) + (country,)
         return None
 
+    def cold_hit(city):
+        images = explore(city)
+        return random.choice(images) + (city[3],) if images else None
+
     def from_cold(avoid):
-        for _ in range(12 if scope else 6):
-            city = pick_city(avoid, scope)
-            if not city:
+        # probe several candidate cities at once and take the first with
+        # coverage -- a thin scope (much of Asia, Africa) can otherwise walk
+        # through a dozen barren cities one slow tile at a time
+        budget = 12 if scope else 6
+        while budget > 0:
+            batch = [c for c in (pick_city(avoid, scope)
+                                 for _ in range(min(4, budget))) if c]
+            if not batch:
                 return None
-            images = explore(city)
-            if images:
-                return random.choice(images) + (city[3],)
+            budget -= len(batch)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
+                futures = [ex.submit(cold_hit, c) for c in batch]
+                for fut in concurrent.futures.as_completed(futures):
+                    found = fut.result()
+                    if found:
+                        return found
         return None
 
     # a cold fetch costs a few seconds but adds a new country to the warm pool,
@@ -364,7 +397,22 @@ def start():
     resp = begin(mode, limit)
     if scope:
         session["scope"] = sorted(scope)  # ISO codes every round must match
+        for _ in range(5):                 # stock the pool for this scope up front
+            warm_one(scope)
     return resp
+
+
+@app.route("/api/resume", methods=["POST"])
+def resume():
+    """The client says a street is on screen -- start the Time Attack clock.
+
+    Each round loads paused (pause_clock in /api/round and /api/guess), so this
+    is what actually gets the clock ticking again. A no-op outside Time Attack.
+    """
+    if session.get("mode") == "time" and not game_over() \
+            and not session.get("running_since"):
+        session["running_since"] = time.time()
+    return jsonify(seconds_left=time_left(), over=game_over())
 
 
 # ------------------------------------------------------------- multiplayer
@@ -633,7 +681,11 @@ def new_round():
             )
     except Exception as e:
         return jsonify(error=str(e)), 502
-    warm_one()
+    warm_scope = set(session["scope"]) if session.get("scope") else None
+    # keep a few tiles ahead so later rounds don't wait; a narrowed scope needs
+    # a deeper buffer because it has fewer fresh countries to fall back on
+    for _ in range(3 if warm_scope else 2):
+        warm_one(warm_scope)
     session["answer"] = (lat, lon)  # answer stays server-side, no devtools peeking
     session["image"] = str(image_id)
     session["recent"] = ([country] + session.get("recent", []))[:RECENT_COUNTRIES]
