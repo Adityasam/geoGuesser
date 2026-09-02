@@ -379,6 +379,10 @@ let loading = false;   // guards against two rounds loading over each other
 // MapillaryJS rejects moveTo with a Cancel/Abort error when the player walks or
 // drags before it settles. The viewer is then already on a valid image, so that
 // is not a failure -- retrying it used to pull a whole new location mid-round.
+function sleep(ms) {
+  return new Promise(function (r) { setTimeout(r, ms); });
+}
+
 function navAborted(err) {
   const name = (err && (err.name || (err.constructor || {}).name)) || '';
   return /cancel|abort/i.test(name);
@@ -410,14 +414,30 @@ async function newRound(tries) {
     } catch (err) {
       d = { error: 'network error' };
     }
-    if (d.error) { setStatus(d.error); return; }
+    if (d.error) {
+      // Mapillary 5xx's in bursts; the server says when it is worth retrying
+      if (d.retry && tries < 3) {
+        setStatus('Mapillary is busy, retrying&hellip;', true);
+        await sleep(1500 * (tries + 1));
+        loading = false;
+        return newRound(tries + 1);
+      }
+      setStatus(d.error);
+      return;
+    }
 
     try {
       await viewer.moveTo(d.image_id);
     } catch (err) {
       if (!navAborted(err)) {
-        // a dud image would strand the player: Next only exists post-guess
-        if (tries < 2) { loading = false; return newRound(tries + 1); }
+        // a dud image, or Mapillary erroring on its image endpoint. Pause
+        // before retrying, since hammering a struggling API just fails faster.
+        if (tries < 3) {
+          setStatus('That street would not load, trying another&hellip;', true);
+          await sleep(1200 * (tries + 1));
+          loading = false;
+          return newRound(tries + 1);
+        }
         setStatus('could not load a street, please reload');
         return;
       }

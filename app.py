@@ -31,6 +31,7 @@ ZOOM = 14  # the only zoom where Mapillary's public tiles carry the image layer
 
 MIN_POP = 50_000  # below this, Mapillary coverage gets thin enough to waste fetches
 MIN_PANOS = 10    # a tile with 1 lonely image makes for a repetitive city
+TILE_TRIES = 3    # Mapillary 5xx's sporadically; retry before giving up
 MAX_SCORE = 2_000  # points for a perfect guess
 # Exponential falloff: every FALLOFF_KM of error cuts the score to ~37% of it.
 # 1500 km is GeoGuessr's constant (5000 * exp(-10d / 14916 km map diagonal)).
@@ -143,13 +144,35 @@ def tile2deg(x, y, z, px, py, extent):
 # -------------------------------------------------------------------- imagery
 
 
+class TileUnavailable(Exception):
+    """Mapillary was unreachable or erroring -- says nothing about coverage."""
+
+
+def fetch_tile(x, y):
+    """One tile's bytes, riding out Mapillary's intermittent 5xx.
+
+    Their tile and graph endpoints both return sporadic
+    `500 Service temporarily unavailable`. Treating that as "this city has no
+    imagery" would be wrong twice over: it fails the round, and it would poison
+    the `pano` column for a city that is actually fine.
+    """
+    for attempt in range(TILE_TRIES):
+        try:
+            r = requests.get(f"{TILES}/{ZOOM}/{x}/{y}",
+                             params={"access_token": TOKEN}, timeout=30)
+            if r.status_code < 500:
+                r.raise_for_status()
+                return r.content
+        except requests.RequestException:
+            pass
+        if attempt < TILE_TRIES - 1:
+            time.sleep(0.5 * (attempt + 1))
+    raise TileUnavailable(f"tile {ZOOM}/{x}/{y} unavailable")
+
+
 def tile_panos(x, y):
     """360-only (image_id, lat, lon) from one z14 tile."""
-    r = requests.get(
-        f"{TILES}/{ZOOM}/{x}/{y}", params={"access_token": TOKEN}, timeout=60
-    )
-    r.raise_for_status()
-    layer = mapbox_vector_tile.decode(r.content).get("image")
+    layer = mapbox_vector_tile.decode(fetch_tile(x, y)).get("image")
     if not layer:
         return ()
     extent = layer["extent"]
@@ -197,8 +220,8 @@ def explore(city):
     city_id, lat, lon, country = city
     try:
         images = city_images(lat, lon)
-    except requests.RequestException:
-        return ()
+    except (requests.RequestException, TileUnavailable):
+        return ()          # a failed probe proves nothing; leave `pano` alone
     mark_pano(city_id, bool(images))
     if images and (country, lat, lon) not in WARM:
         WARM.append((country, lat, lon))
@@ -249,9 +272,11 @@ def random_image(recent=(), scope=None):
     fresh = [w for w in pool if w[0] not in older]
 
     def from_warm(candidates):
-        if candidates:
-            country, lat, lon = random.choice(candidates)
-            images = city_images(lat, lon)
+        for country, lat, lon in random.sample(candidates, len(candidates)):
+            try:
+                images = city_images(lat, lon)
+            except (requests.RequestException, TileUnavailable):
+                continue   # this one is unreachable right now; try another
             if images:
                 return random.choice(images) + (country,)
         return None
@@ -679,6 +704,9 @@ def new_round():
             image_id, lat, lon, country = random_image(
                 session.get("recent", []), set(scope) if scope else None
             )
+    except RuntimeError as e:
+        # nothing found right now (often Mapillary being flaky) -- retryable
+        return jsonify(error=str(e), retry=True), 503
     except Exception as e:
         return jsonify(error=str(e)), 502
     warm_scope = set(session["scope"]) if session.get("scope") else None
